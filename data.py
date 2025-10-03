@@ -185,18 +185,18 @@ def pendulum_spec() -> DynamicalSystemSpec:
     The initial conditions indicate the states from which the pole is released, 
     deviating slightly from the inverted position by ±10 degrees. 
     
-    The state consists of the angle and the angular velocity and we report errors in radians
+    The state consists of the angle (x1) and the angular velocity (x2) and we report errors in radians
     """
     g_over_l = 9.81 / 1.0
 
     def dynamics(_t: float, state: np.ndarray, _u: Optional[np.ndarray]) -> np.ndarray:
-        theta, omega = state
-        return np.array([omega, -g_over_l * np.sin(theta)], dtype=np.float32)
+        x1, x2 = state
+        return np.array([x2, -g_over_l * np.sin(x1)], dtype=np.float32)
 
     def init_sampler(rng: np.random.Generator) -> np.ndarray:
-        theta = rng.uniform(-np.pi, np.pi)
-        omega = rng.uniform(-2.0, 2.0)
-        return np.array([theta, omega], dtype=np.float32)
+        x1 = rng.uniform(-np.pi, np.pi)
+        x2 = rng.uniform(-2.0, 2.0)
+        return np.array([x1, x2], dtype=np.float32)
 
     return DynamicalSystemSpec(name="pendulum", state_dim=2, dynamics=dynamics, init_sampler=init_sampler)
 
