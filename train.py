@@ -44,7 +44,7 @@ def train_lista(args: Namespace) -> Path:
     optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
 
     run_dir = _current_run_dir(args.output_dir, "lista")
-    config = {k: (list(v) if isinstance(v, (tuple, list)) else v) for k, v in vars(args).items()}
+    config = {k: (list(v) if isinstance(v, (tuple, list)) else v) for k, v in vars(args).items() if k != "func"}
     save_json(config, run_dir / "config.json")
     best_val = float("inf")
     history = []
@@ -180,7 +180,7 @@ def _train_koopman_common(args: Namespace, model_type: str) -> Path:
     )
 
     run_dir = _current_run_dir(args.output_dir, model_type)
-    config = {k: (list(v) if isinstance(v, (tuple, list)) else v) for k, v in vars(args).items()}
+    config = {k: (list(v) if isinstance(v, (tuple, list)) else v) for k, v in vars(args).items() if k != "func"}
     save_json(config, run_dir / "config.json")
     best_val = float("inf")
     history = []
