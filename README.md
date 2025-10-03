@@ -10,18 +10,39 @@ pip install -e .[develop]
 # Train LISTA on synthetic sparse coding data
 python main.py train-lista --dict-dim 400 --input-dim 100 --epochs 50
 
-# Train Koopman autoencoder on the pendulum system
-python main.py train-kae --system pendulum --latent-dim 128 --sequence-length 100 --epochs 30
+# Train Koopman autoencoder on Duffing with continuous-time Koopman + Tustin, and conservative LRs
+python main.py train-kae \
+  --system duffing \
+  --num-samples 50 \
+  --sequence-length 10 \
+  --dt 0.01 \
+  --latent-dim 128 \
+  --koopman-mode continuous \
+  --control-discretization tustin \
+  --lr-main 1e-4 \
+  --lr-koopman 1e-5 \
+  --weight-decay 1e-4 \
+  --reencode-period 20
 
 # Train Koopman sparse autoencoder with LISTA encoder
-python main.py train-ksae --system duffing --latent-dim 256 --lista-T 3 --lambda-sparse 1e-3
+python main.py train-ksae \
+  --system duffing \
+  --latent-dim 256 \
+  --lista-T 3 \
+  --lambda-sparse 1e-3 \
+  --koopman-mode continuous \
+  --control-discretization tustin \
+  --lr-main 1e-4 \
+  --lr-koopman 1e-5 \
+  --lr-lista 1e-4 \
+  --reencode-period 20
 
 # Evaluate long-horizon rollouts with periodic reencoding
 python main.py eval-ksae --checkpoint runs/ksae/<run>/checkpoint.pt --rollout 1000 --reencode-period 25
 
 # 100-step rollout, unseen seed, save plots
 python main.py eval-kae \
-  --checkpoint runs/kae/PUT_TIMESTAMP/checkpoint.pt \
+  --checkpoint runs/kae/20251003-011339/checkpoint.pt \
   --system duffing \
   --num-samples 200 \
   --sequence-length 101 \
@@ -29,12 +50,12 @@ python main.py eval-kae \
   --latent-dim 128 \
   --rollout 100 \
   --seed 999 \
-  --plot-dir /Users/aidanli/Documents/ksae/plots/duffing_kae_rollout100 \
-  --max-plots 10
+  --plot-dir plots/kae/20251003-011339/duffing_kae_rollout100 \
+  --max-plots 100
 
 # 1000-step rollout, unseen seed, save plots
 python main.py eval-kae \
-  --checkpoint runs/kae/PUT_TIMESTAMP/checkpoint.pt \
+  --checkpoint runs/kae/20251003-011339/checkpoint.pt \
   --system duffing \
   --num-samples 200 \
   --sequence-length 1001 \
@@ -42,11 +63,18 @@ python main.py eval-kae \
   --latent-dim 128 \
   --rollout 1000 \
   --seed 1001 \
-  --plot-dir /Users/aidanli/Documents/ksae/plots/duffing_kae_rollout1000 \
-  --max-plots 10
+  --plot-dir plots/kae/20251003-011339/duffing_kae_rollout1000 \
+  --max-plots 100
 ```
 
 By default each training command writes an artefact directory under `runs/<model>/<timestamp>/` containing checkpoints, configs, and metric history; evaluation commands print metrics to stdout and optionally emit rollout plots with `--plot-dir`.
+
+Optional knobs of interest:
+- `--normalize-decoder-columns/--no-normalize-decoder-columns` (default on): column-normalize decoder to avoid degenerate tiny latents.
+- `--koopman-mode {continuous,discrete}` with `--control-discretization {tustin,zoh}` for dynamics parameterization.
+- Learning rates: `--lr-main` (encoder/decoder), `--lr-koopman` (dynamics), `--lr-lista` (KSAE encoder).
+- `--lambda-sparse` adds small L1 (default `1e-3`) on Koopman embeddings (KSAE and KAE).
+- Re-encoding: `--reencode-period` (eval) and `--train-reencode-period` (training) support 0 (off), 20, or 50 as beneficial settings.
 
 ## Repository Layout
 
