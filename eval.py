@@ -6,6 +6,8 @@ import math
 from pathlib import Path
 from typing import Dict, Optional
 
+import matplotlib
+matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import numpy as np
 import torch
@@ -109,6 +111,16 @@ def evaluate_koopman(
                     )
                     plots_saved += 1
 
+                    # Save phase portrait for 2D+ systems (use first two dims)
+                    if batch["x"].shape[-1] >= 2 and plots_saved <= max_plots:
+                        save_phase_portrait(
+                            batch["x"][0, : horizon + 1].cpu(),
+                            rollout[0].cpu(),
+                            plot_dir / f"phase_{batch_idx:03d}.png",
+                        )
+                        # keep plots_saved aligned with the cap for total saved artifacts
+                        plots_saved += 0  # no increment to let rollout+phase count as one sample
+
     if count == 0:
         return {
             "reconstruction_mse": 0.0,
@@ -155,6 +167,44 @@ def save_rollout_plot(true_sequence: torch.Tensor, predicted_sequence: torch.Ten
         ax.set_ylabel(f"dim {dim}")
     axes[-1].set_xlabel("time step")
     axes[0].legend()
+    fig.tight_layout()
+    fig.savefig(path)
+    plt.close(fig)
+
+
+def save_phase_portrait(true_sequence: torch.Tensor, predicted_sequence: torch.Tensor, path: Path) -> None:
+    """Plot phase portrait (x1 vs x2) comparing true and predicted trajectories.
+
+    Expects:
+    - true_sequence: Tensor with shape (horizon + 1, state_dim)
+    - predicted_sequence: Tensor with shape (horizon, state_dim)
+    The first dimension is time. The predicted sequence aligns with true_sequence[1:].
+    Only the first two state dimensions are plotted.
+    """
+    if true_sequence.dim() != 2 or predicted_sequence.dim() != 2:
+        raise ValueError("Sequences must be 2D tensors: (time, state_dim)")
+    if true_sequence.size(1) < 2 or predicted_sequence.size(1) < 2:
+        # Not enough dimensions for a phase portrait; no-op save to avoid breaking pipelines
+        fig, ax = plt.subplots(1, 1, figsize=(5, 4))
+        ax.text(0.5, 0.5, "Phase portrait requires ≥2 dims", ha="center", va="center")
+        ax.axis("off")
+        fig.tight_layout()
+        fig.savefig(path)
+        plt.close(fig)
+        return
+
+    # Align lengths: predicted has length H, true has H+1 (including x0)
+    true_xy = true_sequence[1:, :2]
+    pred_xy = predicted_sequence[:, :2]
+
+    fig, ax = plt.subplots(1, 1, figsize=(5, 4))
+    ax.plot(true_xy[:, 0].numpy(), true_xy[:, 1].numpy(), label="true", color="C0", linewidth=2)
+    ax.plot(pred_xy[:, 0].numpy(), pred_xy[:, 1].numpy(), label="pred", color="C1", linewidth=2, linestyle="--")
+    ax.set_xlabel("x1")
+    ax.set_ylabel("x2")
+    ax.set_title("Phase portrait")
+    ax.grid(True, linestyle=":", alpha=0.6)
+    ax.legend()
     fig.tight_layout()
     fig.savefig(path)
     plt.close(fig)
