@@ -193,9 +193,11 @@ def save_phase_portrait(true_sequence: torch.Tensor, predicted_sequence: torch.T
         plt.close(fig)
         return
 
-    # Align lengths: predicted has length H, true has H+1 (including x0)
-    true_xy = true_sequence[1:, :2]
-    pred_xy = predicted_sequence[:, :2]
+    # Build continuous trajectories in (x1, x2) space
+    # - True trajectory includes the initial state x0
+    # - Predicted trajectory is prepended with x0 so it starts from the same point
+    true_xy = true_sequence[:, :2]
+    pred_xy = torch.cat([true_sequence[0:1, :2], predicted_sequence[:, :2]], dim=0)
 
     fig, ax = plt.subplots(1, 1, figsize=(5, 4))
     ax.plot(true_xy[:, 0].numpy(), true_xy[:, 1].numpy(), label="true", color="C0", linewidth=2)
@@ -203,6 +205,7 @@ def save_phase_portrait(true_sequence: torch.Tensor, predicted_sequence: torch.T
     ax.set_xlabel("x1")
     ax.set_ylabel("x2")
     ax.set_title("Phase portrait")
+    ax.set_aspect("equal", adjustable="datalim")
     ax.grid(True, linestyle=":", alpha=0.6)
     ax.legend()
     fig.tight_layout()
