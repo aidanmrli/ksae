@@ -405,6 +405,7 @@ dependencies = [
     { name = "matplotlib" },
     { name = "numpy", version = "2.2.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.11'" },
     { name = "numpy", version = "2.3.3", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.11'" },
+    { name = "pytest" },
     { name = "scipy", version = "1.15.3", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.11'" },
     { name = "scipy", version = "1.16.2", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.11'" },
     { name = "torch" },
@@ -420,6 +421,7 @@ develop = [
 requires-dist = [
     { name = "matplotlib" },
     { name = "numpy" },
+    { name = "pytest", specifier = ">=8.4.2" },
     { name = "pytest", marker = "extra == 'develop'" },
     { name = "scipy" },
     { name = "torch", specifier = ">=2.2" },
