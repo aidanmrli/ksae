@@ -11,7 +11,7 @@ pip install -e .[develop]
 python main.py train-lista --dict-dim 400 --input-dim 100 --epochs 50
 
 # Train Koopman autoencoder on the pendulum system
-python main.py train-kae --system pendulum --latent-dim 128 --sequence-length 100 --epochs 100
+python main.py train-kae --system pendulum --latent-dim 128 --sequence-length 100 --epochs 30
 
 # Train Koopman sparse autoencoder with LISTA encoder
 python main.py train-ksae --system duffing --latent-dim 256 --lista-T 3 --lambda-sparse 1e-3
