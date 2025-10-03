@@ -5,15 +5,27 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "ksae"
 version = "0.1.0"
-description = "Add your description here"
+description = "Koopman Sparse Autoencoder research sandbox"
 readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [
-    "numpy>=2.2.6",
-    "torch>=2.8.0",
-    "tqdm>=4.67.1",
-    "pytest>=8.3.3",
+    "torch>=2.2",
+    "numpy",
+    "scipy",
+    "matplotlib",
+    "tqdm",
 ]
 
-[tool.setuptools.packages.find]
-where = ["src"]
+[project.optional-dependencies]
+develop = ["pytest"]
+
+[tool.setuptools]
+py-modules = [
+    "main",
+    "models",
+    "losses",
+    "data",
+    "train",
+    "eval",
+    "utils",
+]
