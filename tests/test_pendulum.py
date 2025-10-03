@@ -35,7 +35,7 @@ def test_pendulum_fixed_points():
         state = np.array([x1, 0.0], dtype=np.float32)
         f = spec.dynamics(0.0, state, None)
         # Numerical equality within tolerance
-        np.testing.assert_allclose(f, np.zeros_like(state), rtol=1e-3, atol=1e-3)
+        np.testing.assert_allclose(f, np.zeros_like(state), rtol=1e-5, atol=1e-5)
 
 
 def test_pendulum_energy_near_conserved_short_horizon():
