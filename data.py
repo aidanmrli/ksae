@@ -195,6 +195,16 @@ def pendulum_spec() -> DynamicalSystemSpec:
 
 
 def duffing_spec() -> DynamicalSystemSpec:
+    """Duffing Oscillator represents a model for the motion of a damped and force-driven particle.
+    
+    It follows a nonlinear second order differential equation:
+    2-dot(x) = x - x^3
+    
+    This particular instance admits two center points at (x, dot(x)) = (±1, 0), 
+    and an unstable fixed point at the origin, (x, dot(x)) = (0, 0).
+    
+    Sample initial conditions x1 uniformly from [-2, 2] and x2 from a uniform distribution on [-1, 1].
+    """
     alpha, beta, delta = -1.0, 1.0, 0.2
     gamma, omega_drive = 0.3, 1.2
 
@@ -243,11 +253,28 @@ def lorenz63_spec() -> DynamicalSystemSpec:
 
 
 def parabolic_spec() -> DynamicalSystemSpec:
-    a, b = 0.3, 0.4
+    f"""Parabolic Attractor dynamical system with single fixed point at the origin.
+    The dynamics are governed by the following equations:
+    
+    dot(x1) = mu * x1
+    dot(x2) = lambda * (x2 - x1^2)
+    The system admits a solution that is asymptotically attracted to x2 = x1^2 for lambda < mu < 0.
+    
+    The Koopman embedding, z, that adheres to globally linear dynamics, can be coded 
+    by augmenting the state with the additional nonlinear measurement of z3 = x1^2.
+    Then the derivative of z is given by:
+    
+    dot(z) = [mu * z1, lambda * z2 - lambda * z3, 2 * mu * z3]
+    
+    Set lambda = -1.0 and mu = -0.1 and sample initial conditions x1, x2 from a uniform distribution on [-1.0, 1.0].
+    """
+    mu, lam = -0.1, -1.0
 
     def dynamics(_t: float, state: np.ndarray, _u: Optional[np.ndarray]) -> np.ndarray:
-        x, y = state
-        return np.array([y, -a * x - b * y + 0.1 * x * y], dtype=np.float32)
+        x1, x2 = state
+        dx1 = mu * x1
+        dx2 = lam * (x2 - x1**2)
+        return np.array([dx1, dx2], dtype=np.float32)
 
     def init_sampler(rng: np.random.Generator) -> np.ndarray:
         return rng.uniform(low=-1.0, high=1.0, size=2).astype(np.float32)
