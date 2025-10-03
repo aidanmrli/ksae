@@ -20,7 +20,9 @@ def lista_reconstruction_loss(
     dictionary: torch.Tensor,
 ) -> torch.Tensor:
     """Optional reconstruction loss used when learning a dictionary jointly."""
-    recon = codes @ dictionary.T
+    # dictionary has shape (batch, input_dim, dict_dim), use first example
+    dict_matrix = dictionary[0] if dictionary.dim() == 3 else dictionary
+    recon = codes @ dict_matrix.T
     return F.mse_loss(recon, signals)
 
 

@@ -27,7 +27,9 @@ def evaluate_lista(model: LISTA, loader, device: torch.device) -> Dict[str, floa
         pred = model(x)
         batch_size = x.size(0)
         code_mse += torch.mean((pred - z_star) ** 2).item() * batch_size
-        recon = pred @ dictionary.T
+        # dictionary has shape (batch, input_dim, dict_dim), use first example
+        dict_matrix = dictionary[0] if dictionary.dim() == 3 else dictionary
+        recon = pred @ dict_matrix.T
         recon_mse += torch.mean((recon - x) ** 2).item() * batch_size
         sparsity += (pred.abs() < 1e-3).float().mean().item() * batch_size
         count += batch_size
