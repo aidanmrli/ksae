@@ -1,6 +1,8 @@
 import numpy as np
 
 from data import parabolic_spec, rk4_step
+import torch
+from models import KoopmanAE
 
 
 def test_parabolic_dynamics_matches_docstring():
@@ -64,5 +66,19 @@ def test_koopman_embedding_linear_evolution():
     np.testing.assert_allclose(z_curr[1], x_curr[1], rtol=1e-3, atol=1e-3)
     # z3 should approximate x1^2
     np.testing.assert_allclose(z_curr[2], x_curr[0] ** 2, rtol=1e-2, atol=1e-2)
+
+
+def test_decoder_column_normalization_noop_when_columns_unit_norm():
+    model = KoopmanAE(input_dim=2, latent_dim=2, encoder_hidden=(), decoder_hidden=())
+    # Manually set first decoder layer to have unit-norm columns
+    first_linear = model.decoder[0]
+    with torch.no_grad():
+        w = torch.tensor([[1.0, 0.0], [0.0, 1.0]])
+        first_linear.weight.copy_(w)
+    from train import _normalize_decoder_columns
+    _normalize_decoder_columns(model)
+    with torch.no_grad():
+        col_norms = torch.linalg.norm(first_linear.weight, dim=0)
+    assert torch.allclose(col_norms, torch.ones_like(col_norms), atol=1e-6)
 
 
