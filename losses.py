@@ -62,19 +62,18 @@ def compute_koopman_losses(
         encoded_next = encoded_next[..., : predicted_latents.shape[-1]]
         components["alignment"] = F.mse_loss(predicted_latents, encoded_next)
 
-    if (
-        weights.prediction > 0
-        and predictions is not None
-        and predictions.numel() > 0
-    ):
-        target = batch["x"][:, 1:]
+    if weights.prediction > 0 and predictions is not None and predictions.numel() > 0:
+        target = batch["x"][:, 1: predictions.shape[1] + 1]
         components["prediction"] = F.mse_loss(predictions, target)
 
     if weights.sparsity > 0 and encoded is not None:
         components["sparsity"] = encoded.abs().mean()
 
-    if weights.frobenius > 0 and hasattr(model, "K"):
-        components["frobenius"] = torch.norm(model.K, p="fro")
+    if weights.frobenius > 0:
+        if hasattr(model, "A"):
+            components["frobenius"] = torch.norm(model.A, p="fro")
+        elif hasattr(model, "K"):
+            components["frobenius"] = torch.norm(model.K, p="fro")
 
     total = torch.zeros((), device=batch["x"].device)
     for name, value in components.items():
