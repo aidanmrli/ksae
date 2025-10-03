@@ -94,35 +94,49 @@ def build_parser() -> argparse.ArgumentParser:
 def _add_koopman_train_arguments(parser: argparse.ArgumentParser, include_lista: bool = False) -> None:
     parser.add_argument("--system", type=str, default="pendulum")
     parser.add_argument("--latent-dim", type=int, default=128)
-    parser.add_argument("--sequence-length", type=int, default=100)
+    parser.add_argument("--sequence-length", type=int, default=10)
     parser.add_argument("--num-samples", type=int, default=2000)
     parser.add_argument("--batch-size", type=int, default=32)
     parser.add_argument("--epochs", type=int, default=100)
     parser.add_argument("--dt", type=float, default=0.02)
     parser.add_argument("--noise-std", type=float, default=0.0)
-    parser.add_argument("--encoder-hidden", type=int, nargs="*", default=[256, 256])
+    parser.add_argument("--encoder-hidden", type=int, nargs="*", default=[256, 256, 256, 256])
     parser.add_argument("--decoder-hidden", type=int, nargs="*", default=[256, 256])
-    parser.add_argument("--lr-main", type=float, default=1e-3)
-    parser.add_argument("--lr-koopman", type=float, default=1e-4)
-    parser.add_argument("--lr-lista", type=float, default=5e-4)
+    parser.add_argument("--lr-main", type=float, default=1e-4, help="LR for encoder/decoder; AdamW")
+    parser.add_argument("--lr-koopman", type=float, default=1e-5, help="LR for Koopman dynamics (A/B or K/L)")
+    parser.add_argument("--lr-lista", type=float, default=1e-4, help="LR for LISTA encoder when using KSAE")
     parser.add_argument("--weight-decay", type=float, default=1e-4)
     parser.add_argument("--grad-clip", type=float, default=1.0)
     parser.add_argument("--lambda-recon", type=float, default=1.0)
     parser.add_argument("--lambda-align", type=float, default=1.0)
     parser.add_argument("--lambda-pred", type=float, default=1.0)
     parser.add_argument("--lambda-frob", type=float, default=1e-4)
+    parser.add_argument("--lambda-sparse", type=float, default=1e-3, help="L1 penalty on latent embeddings")
     parser.add_argument("--eval-rollout", type=int, default=200)
-    parser.add_argument("--reencode-period", type=int, default=0)
+    parser.add_argument("--reencode-period", type=int, default=20, help="Period for reencoding during evaluation")
+    parser.add_argument("--train-reencode-period", type=int, default=0, help="Use rollout-based training loss with this period if > 0")
+    parser.add_argument("--koopman-mode", type=str, choices=["continuous", "discrete"], default="continuous",
+                        help="Parameterization of Koopman dynamics")
+    parser.add_argument(
+        "--control-discretization",
+        type=str,
+        choices=["tustin", "zoh"],
+        default="tustin",
+        help="Discretization for controls when using continuous-time dynamics",
+    )
+    # Decoder column normalization toggle
+    parser.add_argument("--normalize-decoder-columns", dest="normalize_decoder_columns", action="store_true")
+    parser.add_argument("--no-normalize-decoder-columns", dest="normalize_decoder_columns", action="store_false")
+    parser.set_defaults(normalize_decoder_columns=True)
+    parser.add_argument("--column-norm-eps", type=float, default=1e-8)
     parser.add_argument("--seed", type=int, default=123)
     parser.add_argument("--device", type=str, default=None)
     parser.add_argument("--output-dir", type=str, default="runs")
     if include_lista:
         parser.add_argument("--lista-T", type=int, default=3)
-        parser.add_argument("--lambda-sparse", type=float, default=1e-3)
         parser.add_argument("--freeze-lista-epochs", type=int, default=20)
     else:
         parser.add_argument("--lista-T", type=int, default=0)
-        parser.add_argument("--lambda-sparse", type=float, default=0.0)
         parser.add_argument("--freeze-lista-epochs", type=int, default=0)
 
 
@@ -135,8 +149,10 @@ def _add_koopman_eval_arguments(parser: argparse.ArgumentParser, include_lista: 
     parser.add_argument("--batch-size", type=int, default=64)
     parser.add_argument("--dt", type=float, default=0.02)
     parser.add_argument("--noise-std", type=float, default=0.0)
-    parser.add_argument("--encoder-hidden", type=int, nargs="*", default=[256, 256])
+    parser.add_argument("--encoder-hidden", type=int, nargs="*", default=[256, 256, 256, 256])
     parser.add_argument("--decoder-hidden", type=int, nargs="*", default=[256, 256])
+    parser.add_argument("--koopman-mode", type=str, choices=["continuous", "discrete"], default="continuous")
+    parser.add_argument("--control-discretization", type=str, choices=["tustin", "zoh"], default="tustin")
     parser.add_argument("--rollout", type=int, default=500)
     parser.add_argument("--reencode-period", type=int, default=0)
     parser.add_argument("--plot-dir", type=str, default=None)
@@ -194,6 +210,9 @@ def run_eval_koopman(args: argparse.Namespace, model_type: str) -> None:
             encoder_hidden=encoder_hidden,
             decoder_hidden=decoder_hidden,
             control_dim=test_loader.dataset.dataset.spec.control_dim,
+            koopman_continuous=(args.koopman_mode == "continuous"),
+            dt=args.dt,
+            control_discretization=args.control_discretization,
         )
     else:
         model = KSAE(
@@ -202,6 +221,9 @@ def run_eval_koopman(args: argparse.Namespace, model_type: str) -> None:
             lista_iterations=getattr(args, "lista_T", 3),
             decoder_hidden=decoder_hidden,
             control_dim=test_loader.dataset.dataset.spec.control_dim,
+            koopman_continuous=(args.koopman_mode == "continuous"),
+            dt=args.dt,
+            control_discretization=args.control_discretization,
         )
 
     checkpoint = torch.load(args.checkpoint, map_location=device)
