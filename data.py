@@ -101,7 +101,15 @@ def simulate_system(
     noise_std: float,
     rng: np.random.Generator,
 ) -> Tuple[np.ndarray, Optional[np.ndarray]]:
-    """Simulate a trajectory and optional control sequence."""
+    """Simulate a trajectory and optional control sequence.
+    
+    Args:
+        spec: Specification of the dynamical system.
+        num_steps: Number of steps to simulate.
+        dt: Time step.
+        noise_std: Standard deviation of the noise.
+        rng: Random number generator.
+    """
     x = spec.init_sampler(rng).astype(np.float32)
     controls = None
     if spec.control_dim > 0 and spec.control_sampler is not None:
@@ -123,7 +131,16 @@ def simulate_system(
 
 
 class DynamicalSystemDataset(Dataset[Dict[str, torch.Tensor]]):
-    """Batch of simulated trajectories for Koopman models."""
+    """Batch of simulated trajectories for Koopman models.
+    
+    Args:
+        spec: Specification of the dynamical system.
+        num_samples: Number of trajectories to simulate.
+        seq_len: Length of each trajectory.
+        dt: Time step.
+        noise_std: Standard deviation of the noise.
+        seed: Random seed.
+    """
 
     def __init__(
         self,
