@@ -132,8 +132,11 @@ def _train_koopman_common(args: Namespace, model_type: str) -> Path:
             encoder_hidden=args.encoder_hidden,
             decoder_hidden=args.decoder_hidden,
             control_dim=train_loader.dataset.dataset.spec.control_dim,
+            koopman_continuous=(args.koopman_mode == "continuous"),
+            dt=args.dt,
+            control_discretization=args.control_discretization,
         )
-        sparsity_weight = 0.0
+        sparsity_weight = args.lambda_sparse
     elif model_type == "ksae":
         model = KSAE(
             input_dim=train_loader.dataset.dataset.spec.state_dim,
@@ -141,6 +144,9 @@ def _train_koopman_common(args: Namespace, model_type: str) -> Path:
             lista_iterations=args.lista_T,
             decoder_hidden=args.decoder_hidden,
             control_dim=train_loader.dataset.dataset.spec.control_dim,
+            koopman_continuous=(args.koopman_mode == "continuous"),
+            dt=args.dt,
+            control_discretization=args.control_discretization,
         )
         sparsity_weight = args.lambda_sparse
     else:
@@ -149,9 +155,16 @@ def _train_koopman_common(args: Namespace, model_type: str) -> Path:
     model.to(device)
 
     param_groups = []
-    koopman_params = [model.K]
-    if getattr(model, "L", None) is not None:
-        koopman_params.append(model.L)
+    # Dynamics parameter group (continuous: A/B; discrete: K/L)
+    koopman_params = []
+    if hasattr(model, "A"):
+        koopman_params.append(model.A)
+        if getattr(model, "B", None) is not None:
+            koopman_params.append(model.B)
+    else:
+        koopman_params.append(model.K)
+        if getattr(model, "L", None) is not None:
+            koopman_params.append(model.L)
     param_groups.append({"params": [p for p in koopman_params if p is not None], "lr": args.lr_koopman})
 
     decoder_params = list(model.decoder.parameters())
@@ -169,7 +182,7 @@ def _train_koopman_common(args: Namespace, model_type: str) -> Path:
         if encoder_params:
             param_groups.append({"params": encoder_params, "lr": args.lr_lista})
 
-    optimizer = torch.optim.AdamW(param_groups, weight_decay=args.weight_decay)
+    optimizer = torch.optim.AdamW(param_groups, weight_decay=args.weight_decay, lr=args.lr_main)
 
     weights = KoopmanLossWeights(
         reconstruction=args.lambda_recon,
@@ -228,14 +241,62 @@ def _train_koopman_epoch(
         batch = {key: tensor.to(device) for key, tensor in batch.items()}
         optimizer.zero_grad()
         outputs = model(batch["x"], batch.get("u"))
-        total_loss, _ = compute_koopman_losses(outputs, batch, model, weights)
+        total_loss, components = compute_koopman_losses(outputs, batch, model, weights)
+        # Optional rollout-based prediction loss with periodic reencoding during training
+        if getattr(args, "train_reencode_period", 0) and weights.prediction > 0:
+            seq_horizon = batch["x"].shape[1] - 1
+            if seq_horizon > 0:
+                controls = batch.get("u")
+                if controls is not None:
+                    controls = controls[:, :seq_horizon]
+                rollout = model.rollout(
+                    batch["x"][:, 0],
+                    horizon=seq_horizon,
+                    reencode_period=args.train_reencode_period,
+                    controls=controls,
+                )
+                target = batch["x"][:, 1 : seq_horizon + 1]
+                rollout_mse = torch.mean((rollout - target) ** 2)
+                # Replace teacher-forced prediction term with rollout-based term
+                if "prediction" in components:
+                    total_loss = total_loss - weights.prediction * components["prediction"]
+                total_loss = total_loss + weights.prediction * rollout_mse
         total_loss.backward()
         if getattr(args, "grad_clip", None):
             clip_grad_norm_(model.parameters(), args.grad_clip)
         optimizer.step()
+        # Optional decoder column normalization to discourage degenerate tiny codes
+        if getattr(args, "normalize_decoder_columns", True):
+            _normalize_decoder_columns(model, eps=getattr(args, "column_norm_eps", 1e-8))
         meter.update(total_loss.item(), batch["x"].size(0))
     return meter.average
 
 
 # Delayed import to avoid circular dependency when the module is loaded.
 from eval import evaluate_koopman, evaluate_lista  # noqa: E402
+
+
+def _normalize_decoder_columns(model: torch.nn.Module, eps: float = 1e-8) -> None:
+    """Normalize the columns of the first Linear layer in the decoder.
+
+    This discourages the encoder from shrinking latent codes to minimize alignment loss.
+    """
+    decoder = getattr(model, "decoder", None)
+    if decoder is None:
+        return
+    # Support Sequential decoders
+    first_linear = None
+    if isinstance(decoder, torch.nn.Sequential):
+        for module in decoder:
+            if isinstance(module, torch.nn.Linear):
+                first_linear = module
+                break
+    elif isinstance(decoder, torch.nn.Linear):
+        first_linear = decoder
+    if first_linear is None:
+        return
+    with torch.no_grad():
+        weight = first_linear.weight  # (out_features, in_features)
+        norms = torch.linalg.norm(weight, dim=0, keepdim=True)
+        norms = torch.clamp(norms, min=eps)
+        weight.div_(norms)
