@@ -106,19 +106,33 @@ class KoopmanAE(nn.Module):
         encoder_hidden: Sequence[int] | None = (256, 256),
         decoder_hidden: Sequence[int] | None = None,
         control_dim: int = 0,
+        koopman_continuous: bool = True,
+        dt: float = 0.01,
+        control_discretization: str = "tustin",
     ) -> None:
         super().__init__()
         self.input_dim = input_dim
         self.latent_dim = latent_dim
         self.control_dim = control_dim
+        self.koopman_continuous = koopman_continuous
+        self.dt = dt
+        if control_discretization not in ("tustin", "zoh"):
+            raise ValueError("control_discretization must be one of {'tustin','zoh'}")
+        self.control_discretization = control_discretization
 
         self.encoder = build_mlp(input_dim, latent_dim, hidden_dims=encoder_hidden)
         if decoder_hidden is None:
             decoder_hidden = tuple(reversed(tuple(encoder_hidden))) if encoder_hidden else (256,)
         self.decoder = build_mlp(latent_dim, input_dim, hidden_dims=decoder_hidden, activation="relu")
 
-        self.K = nn.Parameter(torch.eye(latent_dim))
-        self.L = nn.Parameter(torch.zeros(latent_dim, control_dim)) if control_dim > 0 else None
+        if self.koopman_continuous:
+            # Continuous-time parameterization z' = A z + B u
+            self.A = nn.Parameter(torch.zeros(latent_dim, latent_dim))
+            self.B = nn.Parameter(torch.zeros(latent_dim, control_dim)) if control_dim > 0 else None
+        else:
+            # Discrete-time parameterization z_{t+1} = K z_t + L u_t
+            self.K = nn.Parameter(torch.eye(latent_dim))
+            self.L = nn.Parameter(torch.zeros(latent_dim, control_dim)) if control_dim > 0 else None
 
     def encode(self, x: torch.Tensor) -> torch.Tensor:
         if x.dim() == 3:
@@ -134,10 +148,33 @@ class KoopmanAE(nn.Module):
             return decoded.view(batch, seq_len, self.input_dim)
         return self.decoder(z)
 
+    def _discretized_matrices(self) -> tuple[torch.Tensor, Optional[torch.Tensor]]:
+        """Return (K_d, L_d) for one-step update using bilinear discretization if enabled."""
+        if not self.koopman_continuous:
+            K = getattr(self, "K")
+            L = getattr(self, "L", None)
+            return K, L
+        A = self.A
+        B = self.B
+        I = torch.eye(self.latent_dim, device=A.device, dtype=A.dtype)
+        half_dt = 0.5 * self.dt
+        M = I - half_dt * A
+        N = I + half_dt * A
+        # Solve M * X = N for X to avoid explicit inverse
+        Kd = torch.linalg.solve(M, N)
+        Ld = None
+        if self.control_dim > 0 and B is not None:
+            if self.control_discretization == "tustin":
+                Ld = torch.linalg.solve(M, self.dt * B)
+            else:  # zoh (coarse approximation)
+                Ld = self.dt * B
+        return Kd, Ld
+
     def koopman_step(self, z: torch.Tensor, u: Optional[torch.Tensor] = None) -> torch.Tensor:
-        next_latent = F.linear(z, self.K)
-        if self.control_dim > 0 and u is not None and self.L is not None:
-            next_latent = next_latent + F.linear(u, self.L)
+        Kd, Ld = self._discretized_matrices()
+        next_latent = F.linear(z, Kd)
+        if self.control_dim > 0 and u is not None and Ld is not None:
+            next_latent = next_latent + F.linear(u, Ld)
         return next_latent
 
     def forward(
@@ -212,16 +249,28 @@ class KSAE(nn.Module):
         lista_iterations: int = 3,
         decoder_hidden: Sequence[int] | None = (256,),
         control_dim: int = 0,
+        koopman_continuous: bool = True,
+        dt: float = 0.01,
+        control_discretization: str = "tustin",
     ) -> None:
         super().__init__()
         self.input_dim = input_dim
         self.latent_dim = latent_dim
         self.control_dim = control_dim
+        self.koopman_continuous = koopman_continuous
+        self.dt = dt
+        if control_discretization not in ("tustin", "zoh"):
+            raise ValueError("control_discretization must be one of {'tustin','zoh'}")
+        self.control_discretization = control_discretization
 
         self.encoder = LISTA(dict_dim=latent_dim, input_dim=input_dim, iterations=lista_iterations)
         self.decoder = build_mlp(latent_dim, input_dim, hidden_dims=decoder_hidden or (), activation="relu")
-        self.K = nn.Parameter(torch.eye(latent_dim))
-        self.L = nn.Parameter(torch.zeros(latent_dim, control_dim)) if control_dim > 0 else None
+        if self.koopman_continuous:
+            self.A = nn.Parameter(torch.zeros(latent_dim, latent_dim))
+            self.B = nn.Parameter(torch.zeros(latent_dim, control_dim)) if control_dim > 0 else None
+        else:
+            self.K = nn.Parameter(torch.eye(latent_dim))
+            self.L = nn.Parameter(torch.zeros(latent_dim, control_dim)) if control_dim > 0 else None
 
     def encode(self, x: torch.Tensor) -> torch.Tensor:
         if x.dim() == 3:
@@ -238,10 +287,31 @@ class KSAE(nn.Module):
             return decoded.view(batch, seq_len, self.input_dim)
         return self.decoder(z)
 
+    def _discretized_matrices(self) -> tuple[torch.Tensor, Optional[torch.Tensor]]:
+        if not self.koopman_continuous:
+            K = getattr(self, "K")
+            L = getattr(self, "L", None)
+            return K, L
+        A = self.A
+        B = self.B
+        I = torch.eye(self.latent_dim, device=A.device, dtype=A.dtype)
+        half_dt = 0.5 * self.dt
+        M = I - half_dt * A
+        N = I + half_dt * A
+        Kd = torch.linalg.solve(M, N)
+        Ld = None
+        if self.control_dim > 0 and B is not None:
+            if self.control_discretization == "tustin":
+                Ld = torch.linalg.solve(M, self.dt * B)
+            else:
+                Ld = self.dt * B
+        return Kd, Ld
+
     def koopman_step(self, z: torch.Tensor, u: Optional[torch.Tensor] = None) -> torch.Tensor:
-        next_latent = F.linear(z, self.K)
-        if self.control_dim > 0 and u is not None and self.L is not None:
-            next_latent = next_latent + F.linear(u, self.L)
+        Kd, Ld = self._discretized_matrices()
+        next_latent = F.linear(z, Kd)
+        if self.control_dim > 0 and u is not None and Ld is not None:
+            next_latent = next_latent + F.linear(u, Ld)
         return next_latent
 
     def forward(
