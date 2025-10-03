@@ -205,16 +205,15 @@ def duffing_spec() -> DynamicalSystemSpec:
     
     Sample initial conditions x1 uniformly from [-2, 2] and x2 from a uniform distribution on [-1, 1].
     """
-    alpha, beta, delta = -1.0, 1.0, 0.2
-    gamma, omega_drive = 0.3, 1.2
-
-    def dynamics(t: float, state: np.ndarray, _u: Optional[np.ndarray]) -> np.ndarray:
+    def dynamics(_t: float, state: np.ndarray, _u: Optional[np.ndarray]) -> np.ndarray:
         x, v = state
-        force = gamma * np.cos(omega_drive * t)
-        return np.array([v, -delta * v - alpha * x - beta * x**3 + force], dtype=np.float32)
+        # Undamped, unforced Duffing: x'' = x - x^3
+        return np.array([v, x - x**3], dtype=np.float32)
 
     def init_sampler(rng: np.random.Generator) -> np.ndarray:
-        return rng.uniform(low=-1.0, high=1.0, size=2).astype(np.float32)
+        x1 = rng.uniform(-2.0, 2.0)
+        x2 = rng.uniform(-1.0, 1.0)
+        return np.array([x1, x2], dtype=np.float32)
 
     return DynamicalSystemSpec(name="duffing", state_dim=2, dynamics=dynamics, init_sampler=init_sampler)
 
