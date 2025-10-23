@@ -211,6 +211,20 @@ class KoopmanAE(nn.Module):
         x: torch.Tensor,
         u: Optional[torch.Tensor] = None,
     ) -> Dict[str, torch.Tensor]:
+        """
+        Forward pass for the Koopman autoencoder. 
+        Teacher-forced one-step dynamics conditioned on true past 
+        (training time supervision).
+        
+        Args:
+            x: The input data.
+                Expected shape: (batch, seq_len, input_dim)
+            u: The controls to apply to the system.
+                Expected shape: (batch, seq_len, control_dim)
+        
+        Returns:
+            A dictionary containing the encoded states, reconstructions, predicted latents, and predictions.
+        """
         if x.dim() != 3:
             raise ValueError("Expected x with shape (batch, seq_len, input_dim)")
         batch, seq_len, _ = x.shape
@@ -228,15 +242,16 @@ class KoopmanAE(nn.Module):
             }
 
         Kd, Ld = self._discretized_matrices()
-        predicted_latents = []
-        predictions = []
-        for t in range(seq_len - 1):
-            control_t = u[:, t] if u is not None else None
-            z_hat = self.koopman_step(encoded[:, t], control_t, Kd, Ld)
-            predicted_latents.append(z_hat)
-            predictions.append(self.decode(z_hat))
-        predicted_latents_tensor = torch.stack(predicted_latents, dim=1)
-        predictions_tensor = torch.stack(predictions, dim=1)
+        # Vectorized one-step prediction for all time steps
+        z_t = encoded[:, :-1]
+        predicted_latents_tensor = F.linear(z_t, Kd)
+        if self.control_dim > 0 and u is not None and Ld is not None:
+            u_seq = u[:, : predicted_latents_tensor.size(1)]
+            if self.action_encoder is not None:
+                b, t, c = u_seq.shape
+                u_seq = self.action_encoder(u_seq.reshape(b * t, c)).reshape(b, t, c)
+            predicted_latents_tensor = predicted_latents_tensor + F.linear(u_seq, Ld)
+        predictions_tensor = self.decode(predicted_latents_tensor)
 
         return {
             "encoded": encoded,
@@ -402,15 +417,16 @@ class KSAE(nn.Module):
             }
 
         Kd, Ld = self._discretized_matrices()
-        predicted_latents = []
-        predictions = []
-        for t in range(seq_len - 1):
-            control_t = u[:, t] if u is not None else None
-            z_hat = self.koopman_step(encoded[:, t], control_t, Kd, Ld)
-            predicted_latents.append(z_hat)
-            predictions.append(self.decode(z_hat))
-        predicted_latents_tensor = torch.stack(predicted_latents, dim=1)
-        predictions_tensor = torch.stack(predictions, dim=1)
+        # Vectorized one-step prediction for all time steps
+        z_t = encoded[:, :-1]
+        predicted_latents_tensor = F.linear(z_t, Kd)
+        if self.control_dim > 0 and u is not None and Ld is not None:
+            u_seq = u[:, : predicted_latents_tensor.size(1)]
+            if self.action_encoder is not None:
+                b, t, c = u_seq.shape
+                u_seq = self.action_encoder(u_seq.reshape(b * t, c)).reshape(b, t, c)
+            predicted_latents_tensor = predicted_latents_tensor + F.linear(u_seq, Ld)
+        predictions_tensor = self.decode(predicted_latents_tensor)
         return {
             "encoded": encoded,
             "reconstructions": reconstructions,
