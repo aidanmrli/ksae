@@ -240,7 +240,7 @@ def _train_koopman_common(args: Namespace, model_type: str) -> Path:
                 param.requires_grad = True
 
         train_loss, train_components = _train_koopman_epoch(model, train_loader, optimizer, device, weights, args)
-        val_metrics = evaluate_koopman(model, val_loader, device, args.eval_rollout, args.reencode_period)
+        val_metrics = evaluate_koopman(model, val_loader, device, args.eval_rollout, args.inference_reencode_period)
         val_loss = val_metrics["prediction_mse"]
         history.append({
             "epoch": epoch,

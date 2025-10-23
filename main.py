@@ -106,7 +106,7 @@ def _add_koopman_train_arguments(parser: argparse.ArgumentParser, include_lista:
     parser.add_argument("--epochs", type=int, default=100)
     parser.add_argument("--dt", type=float, default=0.02)
     parser.add_argument("--noise-std", type=float, default=0.0)
-    parser.add_argument("--encoder-hidden", type=int, nargs="*", default=[256, 256, 256, 256])
+    parser.add_argument("--encoder-hidden", type=int, nargs="*", default=[256, 256, 256])
     parser.add_argument("--decoder-hidden", type=int, nargs="*", default=[256, 256])
     parser.add_argument("--action-encoder-layers", type=int, nargs="*", default=[], help="Hidden sizes for action encoder MLP")
     parser.add_argument("--lr-main", type=float, default=1e-4, help="LR for encoder/decoder; AdamW")
@@ -117,10 +117,10 @@ def _add_koopman_train_arguments(parser: argparse.ArgumentParser, include_lista:
     parser.add_argument("--lambda-recon", type=float, default=1.0)
     parser.add_argument("--lambda-align", type=float, default=1.0)
     parser.add_argument("--lambda-pred", type=float, default=1.0)
-    parser.add_argument("--lambda-frob", type=float, default=1e-4)
+    parser.add_argument("--lambda-frob", type=float, default=0.0)
     parser.add_argument("--lambda-sparse", type=float, default=1e-3, help="L1 penalty on latent embeddings")
     parser.add_argument("--eval-rollout", type=int, default=200)
-    parser.add_argument("--reencode-period", type=int, default=20, help="Period for reencoding during evaluation")
+    parser.add_argument("--inference-reencode-period", type=int, default=20, help="Period for reencoding during evaluation")
     parser.add_argument("--train-reencode-period", type=int, default=0, help="Use rollout-based training loss with this period if > 0")
     parser.add_argument("--koopman-mode", type=str, choices=["continuous", "discrete"], default="continuous",
                         help="Parameterization of Koopman dynamics")
@@ -162,7 +162,7 @@ def _add_koopman_eval_arguments(parser: argparse.ArgumentParser, include_lista: 
     parser.add_argument("--koopman-mode", type=str, choices=["continuous", "discrete"], default="continuous")
     parser.add_argument("--control-discretization", type=str, choices=["tustin", "zoh"], default="tustin")
     parser.add_argument("--rollout", type=int, default=1000)
-    parser.add_argument("--reencode-period", type=int, default=0)
+    parser.add_argument("--inference-reencode-period", type=int, default=0)
     parser.add_argument("--plot-dir", type=str, default=None)
     parser.add_argument("--max-plots", type=int, default=0)
     parser.add_argument("--seed", type=int, default=123)
@@ -338,7 +338,7 @@ def run_eval_koopman(args: argparse.Namespace, model_type: str) -> None:
         test_loader,
         device,
         rollout_horizon=args.rollout,
-        reencode_period=args.reencode_period,
+        reencode_period=args.inference_reencode_period,
         plot_dir=plot_dir,
         max_plots=args.max_plots,
     )
