@@ -14,7 +14,7 @@ python main.py train-lista --dict-dim 400 --input-dim 100 --epochs 50
 python main.py train-kae \
   --system duffing \
   --num-samples 50 \
-  --sequence-length 10 \
+  --sequence-length 500 \
   --dt 0.01 \
   --latent-dim 128 \
   --koopman-mode continuous \
@@ -22,7 +22,8 @@ python main.py train-kae \
   --lr-main 1e-4 \
   --lr-koopman 1e-5 \
   --weight-decay 1e-4 \
-  --reencode-period 20
+  --reencode-period 20 \
+  --context-length 10
 
 # Train Koopman sparse autoencoder with LISTA encoder
 python main.py train-ksae \
@@ -75,6 +76,7 @@ Optional knobs of interest:
 - Learning rates: `--lr-main` (encoder/decoder), `--lr-koopman` (dynamics), `--lr-lista` (KSAE encoder).
 - `--lambda-sparse` adds small L1 (default `1e-3`) on Koopman embeddings (KSAE and KAE).
 - Re-encoding: `--reencode-period` (eval) and `--train-reencode-period` (training) support 0 (off), 20, or 50 as beneficial settings.
+ - Training windows: `--context-length T` samples windowed minibatches of length T prediction steps (uses T+1 states). Set `--sequence-length S` to the per-trajectory simulated length (e.g., S=500 as in §4.1).
 
 ## Repository Layout
 

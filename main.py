@@ -95,6 +95,12 @@ def _add_koopman_train_arguments(parser: argparse.ArgumentParser, include_lista:
     parser.add_argument("--system", type=str, default="pendulum")
     parser.add_argument("--latent-dim", type=int, default=128)
     parser.add_argument("--sequence-length", type=int, default=10)
+    parser.add_argument(
+        "--context-length",
+        type=int,
+        default=None,
+        help="Minibatch context/window length T in prediction steps (uses T+1 states).",
+    )
     parser.add_argument("--num-samples", type=int, default=2000)
     parser.add_argument("--batch-size", type=int, default=32)
     parser.add_argument("--epochs", type=int, default=100)

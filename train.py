@@ -123,6 +123,7 @@ def _train_koopman_common(args: Namespace, model_type: str) -> Path:
         dt=args.dt,
         noise_std=args.noise_std,
         seed=args.seed,
+        train_context_length=getattr(args, "context_length", None),
     )
 
     if model_type == "kae":
@@ -135,6 +136,7 @@ def _train_koopman_common(args: Namespace, model_type: str) -> Path:
             koopman_continuous=(args.koopman_mode == "continuous"),
             dt=args.dt,
             control_discretization=args.control_discretization,
+            action_encoder_layers=(getattr(args, "action_encoder_layers", None) or getattr(args, "action_encoder_hidden", None)),
         )
         sparsity_weight = args.lambda_sparse
     elif model_type == "ksae":
@@ -147,6 +149,7 @@ def _train_koopman_common(args: Namespace, model_type: str) -> Path:
             koopman_continuous=(args.koopman_mode == "continuous"),
             dt=args.dt,
             control_discretization=args.control_discretization,
+            action_encoder_layers=(getattr(args, "action_encoder_layers", None) or getattr(args, "action_encoder_hidden", None)),
         )
         sparsity_weight = args.lambda_sparse
     else:
@@ -155,7 +158,7 @@ def _train_koopman_common(args: Namespace, model_type: str) -> Path:
     model.to(device)
 
     param_groups = []
-    # Dynamics parameter group (continuous: A/B; discrete: K/L)
+    # Dynamics parameter group (continuous: A/B; discrete: K/L) + learned delta
     koopman_params = []
     if hasattr(model, "A"):
         koopman_params.append(model.A)
@@ -165,22 +168,32 @@ def _train_koopman_common(args: Namespace, model_type: str) -> Path:
         koopman_params.append(model.K)
         if getattr(model, "L", None) is not None:
             koopman_params.append(model.L)
+    # Include learned time-step log-parameter δ_log
+    if hasattr(model, "delta_log"):
+        koopman_params.append(model.delta_log)
     param_groups.append({"params": [p for p in koopman_params if p is not None], "lr": args.lr_koopman})
 
-    decoder_params = list(model.decoder.parameters())
+    decoder_params = list(model.state_decoder.parameters())
     if decoder_params:
         param_groups.append({"params": decoder_params, "lr": args.lr_main})
 
     if isinstance(model, KoopmanAE):
-        encoder_params = list(model.encoder.parameters())
+        encoder_params = list(model.state_encoder.parameters())
         if encoder_params:
             param_groups.append({"params": encoder_params, "lr": args.lr_main})
     else:
-        encoder_params = list(model.encoder.parameters())
+        encoder_params = list(model.state_encoder.parameters())
         for param in encoder_params:
             param.requires_grad = args.freeze_lista_epochs == 0
         if encoder_params:
             param_groups.append({"params": encoder_params, "lr": args.lr_lista})
+
+    # Action encoder parameters (if present)
+    action_enc = getattr(model, "action_encoder", None)
+    if action_enc is not None:
+        action_params = list(action_enc.parameters())
+        if action_params:
+            param_groups.append({"params": action_params, "lr": args.lr_main})
 
     optimizer = torch.optim.AdamW(param_groups, weight_decay=args.weight_decay, lr=args.lr_main)
 
@@ -200,7 +213,7 @@ def _train_koopman_common(args: Namespace, model_type: str) -> Path:
 
     for epoch in range(1, args.epochs + 1):
         if model_type == "ksae" and args.freeze_lista_epochs and epoch > args.freeze_lista_epochs:
-            for param in model.encoder.parameters():
+            for param in model.state_encoder.parameters():
                 param.requires_grad = True
 
         train_loss = _train_koopman_epoch(model, train_loader, optimizer, device, weights, args)
@@ -281,7 +294,7 @@ def _normalize_decoder_columns(model: torch.nn.Module, eps: float = 1e-8) -> Non
 
     This discourages the encoder from shrinking latent codes to minimize alignment loss.
     """
-    decoder = getattr(model, "decoder", None)
+    decoder = getattr(model, "state_decoder", None)
     if decoder is None:
         return
     # Support Sequential decoders
