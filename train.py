@@ -23,6 +23,27 @@ def _current_run_dir(base: str, tag: str) -> Path:
     return ensure_dir(Path(base) / tag / timestamp)
 
 
+def _resolve_dynamics_spec(loader: DataLoader):
+    """Return the underlying DynamicalSystemSpec from a potentially wrapped dataset.
+
+    Supports the following dataset wrappers:
+    - torch.utils.data.Subset (via `.dataset`)
+    - WindowedSequenceDataset (via `._inner`)
+    - Direct DynamicalSystemDataset exposing `.spec`
+    """
+    dataset = loader.dataset
+    # Unwrap WindowedSequenceDataset if present
+    if hasattr(dataset, "_inner"):
+        dataset = dataset._inner  # type: ignore[attr-defined]
+    # Unwrap Subset if present
+    if hasattr(dataset, "dataset"):
+        dataset = dataset.dataset  # type: ignore[attr-defined]
+    spec = getattr(dataset, "spec", None)
+    if spec is None:
+        raise AttributeError("Could not resolve dynamics spec from dataset")
+    return spec
+
+
 def train_lista(args: Namespace) -> Path:
     """Train LISTA to approximate sparse codes generated synthetically."""
     configure_logging()
@@ -126,13 +147,15 @@ def _train_koopman_common(args: Namespace, model_type: str) -> Path:
         train_context_length=getattr(args, "context_length", None),
     )
 
+    spec = _resolve_dynamics_spec(train_loader)
+
     if model_type == "kae":
         model = KoopmanAE(
-            input_dim=train_loader.dataset.dataset.spec.state_dim,
+            input_dim=spec.state_dim,
             latent_dim=args.latent_dim,
             encoder_hidden=args.encoder_hidden,
             decoder_hidden=args.decoder_hidden,
-            control_dim=train_loader.dataset.dataset.spec.control_dim,
+            control_dim=spec.control_dim,
             koopman_continuous=(args.koopman_mode == "continuous"),
             dt=args.dt,
             control_discretization=args.control_discretization,
@@ -141,11 +164,11 @@ def _train_koopman_common(args: Namespace, model_type: str) -> Path:
         sparsity_weight = args.lambda_sparse
     elif model_type == "ksae":
         model = KSAE(
-            input_dim=train_loader.dataset.dataset.spec.state_dim,
+            input_dim=spec.state_dim,
             latent_dim=args.latent_dim,
             lista_iterations=args.lista_T,
             decoder_hidden=args.decoder_hidden,
-            control_dim=train_loader.dataset.dataset.spec.control_dim,
+            control_dim=spec.control_dim,
             koopman_continuous=(args.koopman_mode == "continuous"),
             dt=args.dt,
             control_discretization=args.control_discretization,
