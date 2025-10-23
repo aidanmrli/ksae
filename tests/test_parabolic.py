@@ -71,7 +71,7 @@ def test_koopman_embedding_linear_evolution():
 def test_decoder_column_normalization_noop_when_columns_unit_norm():
     model = KoopmanAE(input_dim=2, latent_dim=2, encoder_hidden=(), decoder_hidden=())
     # Manually set first decoder layer to have unit-norm columns
-    first_linear = model.decoder[0]
+    first_linear = model.state_decoder[0]
     with torch.no_grad():
         w = torch.tensor([[1.0, 0.0], [0.0, 1.0]])
         first_linear.weight.copy_(w)
