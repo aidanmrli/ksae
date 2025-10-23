@@ -17,13 +17,19 @@ python main.py train-kae \
   --sequence-length 500 \
   --dt 0.01 \
   --latent-dim 128 \
+  --encoder-hidden 256 256 256 \
+  --decoder-hidden \
   --koopman-mode continuous \
   --control-discretization tustin \
+  --lambda-align 1.0 \
+  --lambda-recon 1.0 \
+  --lambda-pred 1.0 \
+  --lambda-sparse 1e-3 \
   --lr-main 1e-4 \
   --lr-koopman 1e-5 \
   --weight-decay 1e-4 \
-  --reencode-period 20 \
-  --context-length 10
+  --inference-reencode-period 20 \
+  --context-length 10 
 
 # Train Koopman sparse autoencoder with LISTA encoder
 python main.py train-ksae \
@@ -36,18 +42,20 @@ python main.py train-ksae \
   --lr-main 1e-4 \
   --lr-koopman 1e-5 \
   --lr-lista 1e-4 \
-  --reencode-period 20
+  --inference-reencode-period 20
 
 # Evaluate KSAE rollouts with a fixed reencoding period (saves plots if provided)
-python main.py eval-ksae --checkpoint runs/ksae/<run>/checkpoint.pt --rollout 1000 --reencode-period 25 --plot-dir plots/ksae/<run> --max-plots 100
+python main.py eval-ksae --checkpoint runs/ksae/<run>/checkpoint.pt --rollout 1000 --inference-reencode-period 25 --plot-dir plots/ksae/<run> --max-plots 100
 
 # Evaluate KoopmanAE with paper-style metrics (automatic PR search)
 # Defaults for dynamical systems: dt=0.01, sequence-length=1001, num-samples=50, rollout=1000
 # Prints MSE@100 and MSE@1000 with/without PR, plus best k ∈ {10,25,50,100}
 python main.py eval-kae \
-  --checkpoint runs/kae/20251022-235511/checkpoint.pt \
+  --checkpoint runs/kae/20251023-191828/checkpoint.pt \
   --system duffing \
   --latent-dim 128 \
+  --encoder-hidden 256 256 256 \
+  --decoder-hidden \
   --seed 123
 ```
 
@@ -58,7 +66,7 @@ Optional knobs of interest:
 - `--koopman-mode {continuous,discrete}` with `--control-discretization {tustin,zoh}` for dynamics parameterization.
 - Learning rates: `--lr-main` (encoder/decoder), `--lr-koopman` (dynamics), `--lr-lista` (KSAE encoder).
 - `--lambda-sparse` adds small L1 (default `1e-3`) on Koopman embeddings (KSAE and KAE).
-- Re-encoding: `--reencode-period` (eval) and `--train-reencode-period` (training) support 0 (off), 20, or 50 as beneficial settings.
+- Re-encoding: `--inference-reencode-period` (eval) and `--train-reencode-period` (training) support 0 (off), 20, or 50 as beneficial settings.
  - Training windows: `--context-length T` samples windowed minibatches of length T prediction steps (uses T+1 states). Set `--sequence-length S` to the per-trajectory simulated length (e.g., S=500 as in §4.1).
 
 ## Repository Layout
@@ -86,7 +94,7 @@ Adjust hyperparameters directly on the CLI; each run stores a JSON snapshot of t
 ## Evaluation & Plots
 
 - `python main.py eval-lista --checkpoint ...` prints code MSE, reconstruction MSE, PSNR, and sparsity vs. target codes.
-- `python main.py eval-kae --checkpoint ... --rollout 1000 --reencode-period 25 --plot-dir plots/kae` measures reconstruction/prediction/rollout MSE and saves phase plots.
+- `python main.py eval-kae --checkpoint ... --rollout 1000 --inference-reencode-period 25 --plot-dir plots/kae` measures reconstruction/prediction/rollout MSE and saves phase plots.
 - `python main.py eval-ksae ...` reports identical metrics plus latent sparsity.
 
 ## Sanity Checks & Light Tests
@@ -103,5 +111,5 @@ These cover shrinkage correctness, Koopman identity rollouts, and ensure the mod
 ## Notes
 
 - Dynamics datasets include Pendulum, Duffing, Lotka–Volterra, Lorenz63, and a parabolic attractor simulated with RK4 integration.
-- Periodic reencoding can be toggled separately for training (`--reencode-period`) and evaluation (`--reencode-period` on eval commands).
+- Periodic reencoding can be toggled separately for training (`--train-reencode-period`) and evaluation (`--inference-reencode-period` on eval commands).
 - Outputs include `metrics.json` (history of scalar metrics) alongside the best checkpoint to streamline offline analysis.
