@@ -175,6 +175,79 @@ class DynamicalSystemDataset(Dataset[Dict[str, torch.Tensor]]):
 
 
 # ---------------------------------------------------------------------------
+# Windowed view over trajectory datasets for training
+# ---------------------------------------------------------------------------
+
+
+class WindowedSequenceDataset(Dataset[Dict[str, torch.Tensor]]):
+    """Sample fixed-length windows from a trajectory dataset.
+
+    This wraps a dataset that exposes full trajectories via attributes
+    `trajectories` (Tensor[num_samples, seq_len, state_dim]) and optional
+    `controls` (Tensor[num_samples, seq_len, control_dim]).
+
+    Each item returns a window of length `horizon` in terms of prediction steps,
+    which corresponds to `horizon + 1` states and `horizon` controls:
+
+        x: shape (horizon + 1, state_dim)
+        u: shape (horizon, control_dim) if controls exist, else omitted
+
+    If `subset_length` is provided, window start indices are drawn uniformly
+    from [0, min(subset_length, full_seq_len) - (horizon + 1)].
+    """
+
+    def __init__(
+        self,
+        base: Dataset[Dict[str, torch.Tensor]] | DynamicalSystemDataset,
+        *,
+        horizon: int,
+        subset_length: int | None = None,
+        seed: int | None = None,
+    ) -> None:
+        super().__init__()
+        # Support torch.utils.data.Subset wrapping DynamicalSystemDataset
+        if hasattr(base, "dataset") and hasattr(base, "indices"):
+            # type: ignore[attr-defined]
+            self._inner: DynamicalSystemDataset = base.dataset  # type: ignore[assignment]
+            self._indices = list(base.indices)  # type: ignore[attr-defined]
+        else:
+            if not isinstance(base, DynamicalSystemDataset):
+                raise TypeError("WindowedSequenceDataset expects a DynamicalSystemDataset or a Subset thereof")
+            self._inner = base
+            self._indices = list(range(len(base)))
+        self.horizon = int(horizon)
+        if self.horizon < 1:
+            raise ValueError("horizon must be >= 1 to define prediction steps")
+        # Determine full sequence length from the inner dataset
+        full_seq_len = int(self._inner.trajectories.shape[1])
+        max_start_from_full = max(0, full_seq_len - (self.horizon + 1))
+        if subset_length is None:
+            self.max_start = max_start_from_full
+        else:
+            # Restrict start positions to the first subset_length steps
+            restricted = max(0, min(int(subset_length), full_seq_len) - (self.horizon + 1))
+            self.max_start = min(max_start_from_full, restricted)
+        if self.max_start < 0:
+            raise ValueError("Invalid configuration: horizon exceeds available sequence length")
+        self._rng = np.random.default_rng(seed)
+
+    def __len__(self) -> int:
+        return len(self._indices)
+
+    def __getitem__(self, index: int) -> Dict[str, torch.Tensor]:
+        traj_idx = self._indices[index]
+        start = int(self._rng.integers(0, self.max_start + 1)) if self.max_start > 0 else 0
+        end_state = start + self.horizon + 1  # exclusive
+        x_full = self._inner.trajectories[traj_idx]
+        x_window = x_full[start:end_state]
+        sample: Dict[str, torch.Tensor] = {"x": x_window}
+        if self._inner.controls is not None:
+            u_full = self._inner.controls[traj_idx]
+            u_window = u_full[start : start + self.horizon]
+            sample["u"] = u_window
+        return sample
+
+# ---------------------------------------------------------------------------
 # Predefined systems
 # ---------------------------------------------------------------------------
 
@@ -387,6 +460,7 @@ def create_dynamics_dataloaders(
     noise_std: float = 0.0,
     seed: int = 0,
     splits: Sequence[float] = (0.8, 0.1, 0.1),
+    train_context_length: int | None = None,
 ) -> Tuple[
     DataLoader[Dict[str, torch.Tensor]],
     DataLoader[Dict[str, torch.Tensor]],
@@ -404,8 +478,19 @@ def create_dynamics_dataloaders(
         [train_size, val_size, test_size],
         generator=torch.Generator().manual_seed(seed),
     )
+    # For training, optionally wrap with windowed sampling using the specified context length
+    if train_context_length is not None:
+        train_dataset = WindowedSequenceDataset(
+            train_set,
+            horizon=int(train_context_length),
+            subset_length=int(seq_len),
+            seed=seed,
+        )
+    else:
+        train_dataset = train_set
+
     return (
-        create_dataloader(train_set, batch_size=batch_size, shuffle=True),
+        create_dataloader(train_dataset, batch_size=batch_size, shuffle=True),
         create_dataloader(val_set, batch_size=batch_size, shuffle=False),
         create_dataloader(test_set, batch_size=batch_size, shuffle=False),
     )
