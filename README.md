@@ -38,34 +38,17 @@ python main.py train-ksae \
   --lr-lista 1e-4 \
   --reencode-period 20
 
-# Evaluate long-horizon rollouts with periodic reencoding
-python main.py eval-ksae --checkpoint runs/ksae/<run>/checkpoint.pt --rollout 1000 --reencode-period 25
+# Evaluate KSAE rollouts with a fixed reencoding period (saves plots if provided)
+python main.py eval-ksae --checkpoint runs/ksae/<run>/checkpoint.pt --rollout 1000 --reencode-period 25 --plot-dir plots/ksae/<run> --max-plots 100
 
-# 100-step rollout, unseen seed, save plots
+# Evaluate KoopmanAE with paper-style metrics (automatic PR search)
+# Defaults for dynamical systems: dt=0.01, sequence-length=1001, num-samples=50, rollout=1000
+# Prints MSE@100 and MSE@1000 with/without PR, plus best k ∈ {10,25,50,100}
 python main.py eval-kae \
-  --checkpoint runs/kae/20251003-011339/checkpoint.pt \
+  --checkpoint runs/kae/20251022-235511/checkpoint.pt \
   --system duffing \
-  --num-samples 200 \
-  --sequence-length 101 \
-  --dt 0.01 \
   --latent-dim 128 \
-  --rollout 100 \
-  --seed 999 \
-  --plot-dir plots/kae/20251003-011339/duffing_kae_rollout100 \
-  --max-plots 100
-
-# 1000-step rollout, unseen seed, save plots
-python main.py eval-kae \
-  --checkpoint runs/kae/20251003-011339/checkpoint.pt \
-  --system duffing \
-  --num-samples 200 \
-  --sequence-length 1001 \
-  --dt 0.01 \
-  --latent-dim 128 \
-  --rollout 1000 \
-  --seed 1001 \
-  --plot-dir plots/kae/20251003-011339/duffing_kae_rollout1000 \
-  --max-plots 100
+  --seed 123
 ```
 
 By default each training command writes an artefact directory under `runs/<model>/<timestamp>/` containing checkpoints, configs, and metric history; evaluation commands print metrics to stdout and optionally emit rollout plots with `--plot-dir`.
