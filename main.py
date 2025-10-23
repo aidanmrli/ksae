@@ -102,6 +102,7 @@ def _add_koopman_train_arguments(parser: argparse.ArgumentParser, include_lista:
     parser.add_argument("--noise-std", type=float, default=0.0)
     parser.add_argument("--encoder-hidden", type=int, nargs="*", default=[256, 256, 256, 256])
     parser.add_argument("--decoder-hidden", type=int, nargs="*", default=[256, 256])
+    parser.add_argument("--action-encoder-layers", type=int, nargs="*", default=[], help="Hidden sizes for action encoder MLP")
     parser.add_argument("--lr-main", type=float, default=1e-4, help="LR for encoder/decoder; AdamW")
     parser.add_argument("--lr-koopman", type=float, default=1e-5, help="LR for Koopman dynamics (A/B or K/L)")
     parser.add_argument("--lr-lista", type=float, default=1e-4, help="LR for LISTA encoder when using KSAE")
@@ -151,6 +152,7 @@ def _add_koopman_eval_arguments(parser: argparse.ArgumentParser, include_lista: 
     parser.add_argument("--noise-std", type=float, default=0.0)
     parser.add_argument("--encoder-hidden", type=int, nargs="*", default=[256, 256, 256, 256])
     parser.add_argument("--decoder-hidden", type=int, nargs="*", default=[256, 256])
+    parser.add_argument("--action-encoder-layers", type=int, nargs="*", default=[], help="Hidden sizes for action encoder MLP")
     parser.add_argument("--koopman-mode", type=str, choices=["continuous", "discrete"], default="continuous")
     parser.add_argument("--control-discretization", type=str, choices=["tustin", "zoh"], default="tustin")
     parser.add_argument("--rollout", type=int, default=500)
@@ -202,6 +204,7 @@ def run_eval_koopman(args: argparse.Namespace, model_type: str) -> None:
 
     encoder_hidden = _parse_hidden(args.encoder_hidden)
     decoder_hidden = _parse_hidden(args.decoder_hidden)
+    action_encoder_layers = _parse_hidden(getattr(args, "action_encoder_layers", None))
 
     if model_type == "kae":
         model = KoopmanAE(
@@ -213,6 +216,7 @@ def run_eval_koopman(args: argparse.Namespace, model_type: str) -> None:
             koopman_continuous=(args.koopman_mode == "continuous"),
             dt=args.dt,
             control_discretization=args.control_discretization,
+            action_encoder_layers=action_encoder_layers,
         )
     else:
         model = KSAE(
@@ -224,6 +228,7 @@ def run_eval_koopman(args: argparse.Namespace, model_type: str) -> None:
             koopman_continuous=(args.koopman_mode == "continuous"),
             dt=args.dt,
             control_discretization=args.control_discretization,
+            action_encoder_layers=action_encoder_layers,
         )
 
     checkpoint = torch.load(args.checkpoint, map_location=device)

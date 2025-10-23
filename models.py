@@ -109,21 +109,30 @@ class KoopmanAE(nn.Module):
         koopman_continuous: bool = True,
         dt: float = 0.01,
         control_discretization: str = "tustin",
+        action_encoder_layers: Sequence[int] | None = None,
     ) -> None:
         super().__init__()
         self.input_dim = input_dim
         self.latent_dim = latent_dim
         self.control_dim = control_dim
         self.koopman_continuous = koopman_continuous
-        self.dt = dt
+        # Learnable log time-step: delta = exp(delta_log). Initialize from provided dt.
+        self.delta_log = nn.Parameter(torch.tensor(float(dt)).log())
         if control_discretization not in ("tustin", "zoh"):
             raise ValueError("control_discretization must be one of {'tustin','zoh'}")
         self.control_discretization = control_discretization
 
-        self.encoder = build_mlp(input_dim, latent_dim, hidden_dims=encoder_hidden)
+        self.state_encoder = build_mlp(input_dim, latent_dim, hidden_dims=encoder_hidden)
         if decoder_hidden is None:
             decoder_hidden = tuple(reversed(tuple(encoder_hidden))) if encoder_hidden else (256,)
-        self.decoder = build_mlp(latent_dim, input_dim, hidden_dims=decoder_hidden, activation="relu")
+        self.state_decoder = build_mlp(latent_dim, input_dim, hidden_dims=decoder_hidden, activation="relu")
+
+        # Optional action encoder; identity-sized MLP by default (single Linear if no hidden dims)
+        self.action_encoder: Optional[nn.Sequential]
+        if self.control_dim > 0:
+            self.action_encoder = build_mlp(control_dim, control_dim, hidden_dims=action_encoder_layers or ())
+        else:
+            self.action_encoder = None
 
         if self.koopman_continuous:
             # Continuous-time parameterization z' = A z + B u
@@ -134,19 +143,28 @@ class KoopmanAE(nn.Module):
             self.K = nn.Parameter(torch.eye(latent_dim))
             self.L = nn.Parameter(torch.zeros(latent_dim, control_dim)) if control_dim > 0 else None
 
+    @property
+    def delta(self) -> torch.Tensor:
+        """Positive time-step δ used for discretization (learned as exp(delta_log))."""
+        delta = torch.exp(self.delta_log)
+        # Runtime safety: ensure strictly positive
+        if torch.any(delta <= 0):
+            raise RuntimeError("Invalid delta: exp(delta_log) must be > 0 during discretization")
+        return delta
+
     def encode(self, x: torch.Tensor) -> torch.Tensor:
         if x.dim() == 3:
             batch, seq_len, feat = x.shape
-            encoded = self.encoder(x.view(-1, feat))
+            encoded = self.state_encoder(x.view(-1, feat))
             return encoded.view(batch, seq_len, self.latent_dim)
-        return self.encoder(x)
+        return self.state_encoder(x)
 
     def decode(self, z: torch.Tensor) -> torch.Tensor:
         if z.dim() == 3:
             batch, seq_len, feat = z.shape
-            decoded = self.decoder(z.view(-1, feat))
+            decoded = self.state_decoder(z.view(-1, feat))
             return decoded.view(batch, seq_len, self.input_dim)
-        return self.decoder(z)
+        return self.state_decoder(z)
 
     def _discretized_matrices(self) -> tuple[torch.Tensor, Optional[torch.Tensor]]:
         """Return (K_d, L_d) for one-step update using bilinear discretization if enabled."""
@@ -157,7 +175,8 @@ class KoopmanAE(nn.Module):
         A = self.A
         B = self.B
         I = torch.eye(self.latent_dim, device=A.device, dtype=A.dtype)
-        half_dt = 0.5 * self.dt
+        delta = self.delta
+        half_dt = 0.5 * delta
         M = I - half_dt * A
         N = I + half_dt * A
         # Solve M * X = N for X to avoid explicit inverse
@@ -165,16 +184,19 @@ class KoopmanAE(nn.Module):
         Ld = None
         if self.control_dim > 0 and B is not None:
             if self.control_discretization == "tustin":
-                Ld = torch.linalg.solve(M, self.dt * B)
+                Ld = torch.linalg.solve(M, delta * B)
             else:  # zoh (coarse approximation)
-                Ld = self.dt * B
+                Ld = delta * B
         return Kd, Ld
 
     def koopman_step(self, z: torch.Tensor, u: Optional[torch.Tensor] = None) -> torch.Tensor:
         Kd, Ld = self._discretized_matrices()
         next_latent = F.linear(z, Kd)
         if self.control_dim > 0 and u is not None and Ld is not None:
-            next_latent = next_latent + F.linear(u, Ld)
+            u_encoded = u
+            if self.action_encoder is not None:
+                u_encoded = self.action_encoder(u)
+            next_latent = next_latent + F.linear(u_encoded, Ld)
         return next_latent
 
     def forward(
@@ -222,20 +244,27 @@ class KoopmanAE(nn.Module):
         reencode_period: Optional[int] = None,
         controls: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
-        """Roll out predictions given the first observation x0."""
+        """Roll out predictions given the first observation x0.
+        
+        Args:
+            x0: The initial state.
+            horizon: The number of steps to roll out.
+            reencode_period: The number of steps to reencode the state.
+            controls: The controls to apply to the system.
+        """
         if x0.dim() != 2:
             raise ValueError("x0 must have shape (batch, input_dim)")
-        z = self.encoder(x0)
+        z = self.state_encoder(x0)
         outputs = []
         for step in range(horizon):
             control_t = None
             if controls is not None and controls.size(1) > step:
                 control_t = controls[:, step]
             z = self.koopman_step(z, control_t)
-            x_hat = self.decoder(z)
+            x_hat = self.state_decoder(z)
             outputs.append(x_hat)
             if reencode_period and reencode_period > 0 and (step + 1) % reencode_period == 0:
-                z = self.encoder(x_hat)
+                z = self.state_encoder(x_hat)
         return torch.stack(outputs, dim=1)
 
 
@@ -252,19 +281,28 @@ class KSAE(nn.Module):
         koopman_continuous: bool = True,
         dt: float = 0.01,
         control_discretization: str = "tustin",
+        action_encoder_layers: Sequence[int] | None = None,
     ) -> None:
         super().__init__()
         self.input_dim = input_dim
         self.latent_dim = latent_dim
         self.control_dim = control_dim
         self.koopman_continuous = koopman_continuous
-        self.dt = dt
+        # Learnable log time-step: delta = exp(delta_log). Initialize from provided dt.
+        self.delta_log = nn.Parameter(torch.tensor(float(dt)).log())
         if control_discretization not in ("tustin", "zoh"):
             raise ValueError("control_discretization must be one of {'tustin','zoh'}")
         self.control_discretization = control_discretization
 
-        self.encoder = LISTA(dict_dim=latent_dim, input_dim=input_dim, iterations=lista_iterations)
-        self.decoder = build_mlp(latent_dim, input_dim, hidden_dims=decoder_hidden or (), activation="relu")
+        self.state_encoder = LISTA(dict_dim=latent_dim, input_dim=input_dim, iterations=lista_iterations)
+        self.state_decoder = build_mlp(latent_dim, input_dim, hidden_dims=decoder_hidden or (), activation="relu")
+
+        # Optional action encoder; identity-sized MLP by default
+        self.action_encoder: Optional[nn.Sequential]
+        if self.control_dim > 0:
+            self.action_encoder = build_mlp(control_dim, control_dim, hidden_dims=action_encoder_layers or ())
+        else:
+            self.action_encoder = None
         if self.koopman_continuous:
             self.A = nn.Parameter(torch.zeros(latent_dim, latent_dim))
             self.B = nn.Parameter(torch.zeros(latent_dim, control_dim)) if control_dim > 0 else None
@@ -272,20 +310,28 @@ class KSAE(nn.Module):
             self.K = nn.Parameter(torch.eye(latent_dim))
             self.L = nn.Parameter(torch.zeros(latent_dim, control_dim)) if control_dim > 0 else None
 
+    @property
+    def delta(self) -> torch.Tensor:
+        """Positive time-step δ used for discretization (learned as exp(delta_log))."""
+        delta = torch.exp(self.delta_log)
+        if torch.any(delta <= 0):
+            raise RuntimeError("Invalid delta: exp(delta_log) must be > 0 during discretization")
+        return delta
+
     def encode(self, x: torch.Tensor) -> torch.Tensor:
         if x.dim() == 3:
             batch, seq_len, feat = x.shape
             flattened = x.view(-1, feat)
-            encoded = self.encoder.encode(flattened)
+            encoded = self.state_encoder.encode(flattened)
             return encoded.view(batch, seq_len, self.latent_dim)
-        return self.encoder.encode(x)
+        return self.state_encoder.encode(x)
 
     def decode(self, z: torch.Tensor) -> torch.Tensor:
         if z.dim() == 3:
             batch, seq_len, feat = z.shape
-            decoded = self.decoder(z.view(-1, feat))
+            decoded = self.state_decoder(z.view(-1, feat))
             return decoded.view(batch, seq_len, self.input_dim)
-        return self.decoder(z)
+        return self.state_decoder(z)
 
     def _discretized_matrices(self) -> tuple[torch.Tensor, Optional[torch.Tensor]]:
         if not self.koopman_continuous:
@@ -295,23 +341,27 @@ class KSAE(nn.Module):
         A = self.A
         B = self.B
         I = torch.eye(self.latent_dim, device=A.device, dtype=A.dtype)
-        half_dt = 0.5 * self.dt
+        delta = self.delta
+        half_dt = 0.5 * delta
         M = I - half_dt * A
         N = I + half_dt * A
         Kd = torch.linalg.solve(M, N)
         Ld = None
         if self.control_dim > 0 and B is not None:
             if self.control_discretization == "tustin":
-                Ld = torch.linalg.solve(M, self.dt * B)
+                Ld = torch.linalg.solve(M, delta * B)
             else:
-                Ld = self.dt * B
+                Ld = delta * B
         return Kd, Ld
 
     def koopman_step(self, z: torch.Tensor, u: Optional[torch.Tensor] = None) -> torch.Tensor:
         Kd, Ld = self._discretized_matrices()
         next_latent = F.linear(z, Kd)
         if self.control_dim > 0 and u is not None and Ld is not None:
-            next_latent = next_latent + F.linear(u, Ld)
+            u_encoded = u
+            if self.action_encoder is not None:
+                u_encoded = self.action_encoder(u)
+            next_latent = next_latent + F.linear(u_encoded, Ld)
         return next_latent
 
     def forward(
@@ -360,15 +410,15 @@ class KSAE(nn.Module):
     ) -> torch.Tensor:
         if x0.dim() != 2:
             raise ValueError("x0 must have shape (batch, input_dim)")
-        z = self.encoder.encode(x0)
+        z = self.state_encoder.encode(x0)
         outputs = []
         for step in range(horizon):
             control_t = None
             if controls is not None and controls.size(1) > step:
                 control_t = controls[:, step]
             z = self.koopman_step(z, control_t)
-            x_hat = self.decoder(z)
+            x_hat = self.state_decoder(z)
             outputs.append(x_hat)
             if reencode_period and reencode_period > 0 and (step + 1) % reencode_period == 0:
-                z = self.encoder.encode(x_hat)
+                z = self.state_encoder.encode(x_hat)
         return torch.stack(outputs, dim=1)

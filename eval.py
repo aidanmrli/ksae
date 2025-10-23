@@ -228,8 +228,8 @@ def koopman_identity_sanity() -> None:
     with torch.no_grad():
         for param in model.parameters():
             param.zero_()
-        model.encoder[0].weight.copy_(torch.eye(2))
-        model.decoder[0].weight.copy_(torch.eye(2))
+        model.state_encoder[0].weight.copy_(torch.eye(2))
+        model.state_decoder[0].weight.copy_(torch.eye(2))
         model.K.copy_(torch.eye(2))
     x = torch.randn(2, 5, 2)
     outputs = model(x)
