@@ -10,7 +10,7 @@ from typing import Optional
 import torch
 from torch.utils.data import DataLoader
 
-from data import create_dynamics_dataloaders, create_lista_datasets
+from data import create_dynamics_dataloaders, create_lista_datasets, SYSTEM_REGISTRY, DynamicalSystemDataset
 from eval import evaluate_koopman, evaluate_lista
 from models import KSAE, LISTA, KoopmanAE
 from train import train_kae, train_lista, train_ksae
@@ -151,17 +151,17 @@ def _add_koopman_eval_arguments(parser: argparse.ArgumentParser, include_lista: 
     parser.add_argument("--checkpoint", type=str, required=True)
     parser.add_argument("--system", type=str, default="pendulum")
     parser.add_argument("--latent-dim", type=int, default=128)
-    parser.add_argument("--sequence-length", type=int, default=100)
-    parser.add_argument("--num-samples", type=int, default=1000)
+    parser.add_argument("--sequence-length", type=int, default=1001)
+    parser.add_argument("--num-samples", type=int, default=50)
     parser.add_argument("--batch-size", type=int, default=64)
-    parser.add_argument("--dt", type=float, default=0.02)
+    parser.add_argument("--dt", type=float, default=0.01)
     parser.add_argument("--noise-std", type=float, default=0.0)
     parser.add_argument("--encoder-hidden", type=int, nargs="*", default=[256, 256, 256, 256])
     parser.add_argument("--decoder-hidden", type=int, nargs="*", default=[256, 256])
     parser.add_argument("--action-encoder-layers", type=int, nargs="*", default=[], help="Hidden sizes for action encoder MLP")
     parser.add_argument("--koopman-mode", type=str, choices=["continuous", "discrete"], default="continuous")
     parser.add_argument("--control-discretization", type=str, choices=["tustin", "zoh"], default="tustin")
-    parser.add_argument("--rollout", type=int, default=500)
+    parser.add_argument("--rollout", type=int, default=1000)
     parser.add_argument("--reencode-period", type=int, default=0)
     parser.add_argument("--plot-dir", type=str, default=None)
     parser.add_argument("--max-plots", type=int, default=0)
@@ -198,6 +198,97 @@ def run_eval_koopman(args: argparse.Namespace, model_type: str) -> None:
     set_seed(args.seed)
     device = resolve_device(args.device)
 
+    # Paper-accurate evaluation protocol for KoopmanAE on dynamical systems state prediction
+    if model_type == "kae":
+        # Ensure we have 50 unseen ICs, 1001 steps, dt=0.01, test-only dataset
+        num_samples = args.num_samples if args.num_samples is not None else 50
+        seq_len = max(int(args.sequence_length), 1001)
+        spec = SYSTEM_REGISTRY[args.system]
+        test_dataset = DynamicalSystemDataset(
+            spec,
+            num_samples=num_samples,
+            seq_len=seq_len,
+            dt=args.dt,
+            noise_std=args.noise_std,
+            seed=args.seed,
+        )
+        test_loader = DataLoader(test_dataset, batch_size=args.batch_size, shuffle=False)
+
+        encoder_hidden = _parse_hidden(args.encoder_hidden)
+        decoder_hidden = _parse_hidden(args.decoder_hidden)
+        action_encoder_layers = _parse_hidden(getattr(args, "action_encoder_layers", None))
+
+        model = KoopmanAE(
+            input_dim=test_loader.dataset.spec.state_dim,  # type: ignore[attr-defined]
+            latent_dim=args.latent_dim,
+            encoder_hidden=encoder_hidden,
+            decoder_hidden=decoder_hidden,
+            control_dim=test_loader.dataset.spec.control_dim,  # type: ignore[attr-defined]
+            koopman_continuous=(args.koopman_mode == "continuous"),
+            dt=args.dt,
+            control_discretization=args.control_discretization,
+            action_encoder_layers=action_encoder_layers,
+        )
+        checkpoint = torch.load(args.checkpoint, map_location=device)
+        model.load_state_dict(checkpoint["model_state"])
+        model.to(device)
+        model.eval()
+
+        @torch.no_grad()
+        def _compute_rollout_mse(horizon: int, reencode_period: Optional[int]) -> float:
+            total_mse = 0.0
+            total_count = 0
+            for batch in test_loader:
+                batch = {k: v.to(device) for k, v in batch.items()}
+                x = batch["x"]
+                # truncate horizon to available steps just in case
+                h = min(horizon, x.shape[1] - 1)
+                if h <= 0:
+                    continue
+                controls = batch.get("u")
+                if controls is not None:
+                    controls = controls[:, :h]
+                rollout = model.rollout(x[:, 0], h, reencode_period=reencode_period, controls=controls)
+                target = x[:, 1 : h + 1]
+                batch_mse = torch.mean((rollout - target) ** 2).item()
+                total_mse += batch_mse * x.size(0)
+                total_count += x.size(0)
+            return total_mse / total_count if total_count > 0 else 0.0
+
+        horizons = [100, 1000]
+        pr_candidates = [10, 25, 50, 100]
+        results: dict[str, float | int | str] = {
+            "system": args.system,
+            "latent_dim": int(args.latent_dim),
+            "dt": float(args.dt),
+            "num_trajectories": int(num_samples),
+        }
+        for H in horizons:
+            mse_no_pr = _compute_rollout_mse(H, reencode_period=0)
+            best_k = None
+            best_mse = float("inf")
+            for k in pr_candidates:
+                if k <= H:
+                    mse_k = _compute_rollout_mse(H, reencode_period=k)
+                    if mse_k < best_mse:
+                        best_mse = mse_k
+                        best_k = k
+            # Record metrics (with and without 100x scaling convenience)
+            results[f"mse_no_pr@{H}"] = mse_no_pr
+            results[f"mse_no_pr@{H}_x100"] = 100.0 * mse_no_pr
+            if best_k is not None:
+                results[f"mse_pr_best@{H}"] = best_mse
+                results[f"mse_pr_best@{H}_x100"] = 100.0 * best_mse
+                results[f"best_reencode_period@{H}"] = int(best_k)
+            else:
+                results[f"mse_pr_best@{H}"] = float("nan")
+                results[f"mse_pr_best@{H}_x100"] = float("nan")
+                results[f"best_reencode_period@{H}"] = -1
+
+        print(json.dumps(results, indent=2))
+        return
+
+    # Generic evaluation path (unchanged)
     _, _, test_loader = create_dynamics_dataloaders(
         system=args.system,
         num_samples=args.num_samples,
