@@ -239,19 +239,27 @@ def _train_koopman_common(args: Namespace, model_type: str) -> Path:
             for param in model.state_encoder.parameters():
                 param.requires_grad = True
 
-        train_loss = _train_koopman_epoch(model, train_loader, optimizer, device, weights, args)
+        train_loss, train_components = _train_koopman_epoch(model, train_loader, optimizer, device, weights, args)
         val_metrics = evaluate_koopman(model, val_loader, device, args.eval_rollout, args.reencode_period)
         val_loss = val_metrics["prediction_mse"]
-        history.append({"epoch": epoch, "train_loss": train_loss, **val_metrics})
+        history.append({
+            "epoch": epoch,
+            "train_loss": train_loss,
+            "train_alignment": float(train_components.get("alignment", 0.0)),
+            "train_reconstruction": float(train_components.get("reconstruction", 0.0)),
+            "train_prediction": float(train_components.get("prediction", 0.0)),
+            **val_metrics,
+        })
 
         logging.info(
-            "[%s][epoch %d] train %.4f | val pred %.4f | recon %.4f | align %.4f",
+            "[%s][epoch %d] train total %.5f | train align %.5f | train recon %.5f | train pred %.5f | val pred %.5f",
             model_type.upper(),
             epoch,
             train_loss,
+            train_components.get("alignment", 0.0),
+            train_components.get("reconstruction", 0.0),
+            train_components.get("prediction", 0.0),
             val_metrics["prediction_mse"],
-            val_metrics["reconstruction_mse"],
-            val_metrics["alignment_mse"],
         )
 
         if val_loss < best_val:
@@ -270,14 +278,23 @@ def _train_koopman_epoch(
     device: torch.device,
     weights: KoopmanLossWeights,
     args: Namespace,
-) -> float:
+) -> tuple[float, Dict[str, float]]:
     model.train()
     meter = AverageMeter()
+    align_meter = AverageMeter()
+    recon_meter = AverageMeter()
+    pred_meter = AverageMeter()
     for batch in loader:
         batch = {key: tensor.to(device) for key, tensor in batch.items()}
         optimizer.zero_grad()
         outputs = model(batch["x"], batch.get("u"))
         total_loss, components = compute_koopman_losses(outputs, batch, model, weights)
+        batch_size = batch["x"].size(0)
+        # Track weighted alignment and reconstruction terms
+        if "alignment" in components:
+            align_meter.update((weights.alignment * components["alignment"]).item(), batch_size)
+        if "reconstruction" in components:
+            recon_meter.update((weights.reconstruction * components["reconstruction"]).item(), batch_size)
         # Optional rollout-based prediction loss with periodic reencoding during training
         if getattr(args, "train_reencode_period", 0) and weights.prediction > 0:
             seq_horizon = batch["x"].shape[1] - 1
@@ -297,6 +314,10 @@ def _train_koopman_epoch(
                 if "prediction" in components:
                     total_loss = total_loss - weights.prediction * components["prediction"]
                 total_loss = total_loss + weights.prediction * rollout_mse
+                pred_meter.update((weights.prediction * rollout_mse).item(), batch_size)
+        else:
+            if "prediction" in components:
+                pred_meter.update((weights.prediction * components["prediction"]).item(), batch_size)
         total_loss.backward()
         if getattr(args, "grad_clip", None):
             clip_grad_norm_(model.parameters(), args.grad_clip)
@@ -305,7 +326,11 @@ def _train_koopman_epoch(
         if getattr(args, "normalize_decoder_columns", True):
             _normalize_decoder_columns(model, eps=getattr(args, "column_norm_eps", 1e-8))
         meter.update(total_loss.item(), batch["x"].size(0))
-    return meter.average
+    return meter.average, {
+        "alignment": align_meter.average,
+        "reconstruction": recon_meter.average,
+        "prediction": pred_meter.average,
+    }
 
 
 # Delayed import to avoid circular dependency when the module is loaded.
