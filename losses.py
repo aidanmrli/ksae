@@ -78,6 +78,7 @@ def compute_koopman_losses(
             print("\n=== SHAPE SANITY CHECK ===")
             print(f"predicted_latents: {predicted_latents.shape}")
             print(f"encoded_next:      {encoded_next.shape}")
+            _SHAPES_PRINTED = True
         
         # L2 norm at each timestep, sum over time, mean over batch
         diff_sq = (predicted_latents - encoded_next).pow(2).sum(dim=2)  # (batch, time)
@@ -90,6 +91,7 @@ def compute_koopman_losses(
         if not _SHAPES_PRINTED:
             print(f"reconstructions:   {reconstructions.shape}")
             print(f"batch['x']:        {batch['x'].shape}")
+            _SHAPES_PRINTED = True
         
         # L2 norm at each timestep, sum over time, mean over batch
         diff_sq = (reconstructions - batch["x"]).pow(2).sum(dim=2)  # (batch, time)
