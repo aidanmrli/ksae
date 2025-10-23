@@ -189,8 +189,15 @@ class KoopmanAE(nn.Module):
                 Ld = delta * B
         return Kd, Ld
 
-    def koopman_step(self, z: torch.Tensor, u: Optional[torch.Tensor] = None) -> torch.Tensor:
-        Kd, Ld = self._discretized_matrices()
+    def koopman_step(
+        self,
+        z: torch.Tensor,
+        u: Optional[torch.Tensor] = None,
+        Kd: Optional[torch.Tensor] = None,
+        Ld: Optional[torch.Tensor] = None,
+    ) -> torch.Tensor:
+        if Kd is None:
+            Kd, Ld = self._discretized_matrices()
         next_latent = F.linear(z, Kd)
         if self.control_dim > 0 and u is not None and Ld is not None:
             u_encoded = u
@@ -220,11 +227,12 @@ class KoopmanAE(nn.Module):
                 "predictions": empty_preds,
             }
 
+        Kd, Ld = self._discretized_matrices()
         predicted_latents = []
         predictions = []
         for t in range(seq_len - 1):
             control_t = u[:, t] if u is not None else None
-            z_hat = self.koopman_step(encoded[:, t], control_t)
+            z_hat = self.koopman_step(encoded[:, t], control_t, Kd, Ld)
             predicted_latents.append(z_hat)
             predictions.append(self.decode(z_hat))
         predicted_latents_tensor = torch.stack(predicted_latents, dim=1)
@@ -255,12 +263,13 @@ class KoopmanAE(nn.Module):
         if x0.dim() != 2:
             raise ValueError("x0 must have shape (batch, input_dim)")
         z = self.state_encoder(x0)
+        Kd, Ld = self._discretized_matrices()
         outputs = []
         for step in range(horizon):
             control_t = None
             if controls is not None and controls.size(1) > step:
                 control_t = controls[:, step]
-            z = self.koopman_step(z, control_t)
+            z = self.koopman_step(z, control_t, Kd, Ld)
             x_hat = self.state_decoder(z)
             outputs.append(x_hat)
             if reencode_period and reencode_period > 0 and (step + 1) % reencode_period == 0:
@@ -354,8 +363,15 @@ class KSAE(nn.Module):
                 Ld = delta * B
         return Kd, Ld
 
-    def koopman_step(self, z: torch.Tensor, u: Optional[torch.Tensor] = None) -> torch.Tensor:
-        Kd, Ld = self._discretized_matrices()
+    def koopman_step(
+        self,
+        z: torch.Tensor,
+        u: Optional[torch.Tensor] = None,
+        Kd: Optional[torch.Tensor] = None,
+        Ld: Optional[torch.Tensor] = None,
+    ) -> torch.Tensor:
+        if Kd is None:
+            Kd, Ld = self._discretized_matrices()
         next_latent = F.linear(z, Kd)
         if self.control_dim > 0 and u is not None and Ld is not None:
             u_encoded = u
@@ -385,11 +401,12 @@ class KSAE(nn.Module):
                 "predictions": empty_preds,
             }
 
+        Kd, Ld = self._discretized_matrices()
         predicted_latents = []
         predictions = []
         for t in range(seq_len - 1):
             control_t = u[:, t] if u is not None else None
-            z_hat = self.koopman_step(encoded[:, t], control_t)
+            z_hat = self.koopman_step(encoded[:, t], control_t, Kd, Ld)
             predicted_latents.append(z_hat)
             predictions.append(self.decode(z_hat))
         predicted_latents_tensor = torch.stack(predicted_latents, dim=1)
@@ -411,12 +428,13 @@ class KSAE(nn.Module):
         if x0.dim() != 2:
             raise ValueError("x0 must have shape (batch, input_dim)")
         z = self.state_encoder.encode(x0)
+        Kd, Ld = self._discretized_matrices()
         outputs = []
         for step in range(horizon):
             control_t = None
             if controls is not None and controls.size(1) > step:
                 control_t = controls[:, step]
-            z = self.koopman_step(z, control_t)
+            z = self.koopman_step(z, control_t, Kd, Ld)
             x_hat = self.state_decoder(z)
             outputs.append(x_hat)
             if reencode_period and reencode_period > 0 and (step + 1) % reencode_period == 0:
