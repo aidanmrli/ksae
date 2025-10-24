@@ -1,17 +1,16 @@
-# Koopman Sparse Autoencoder (KSAE)
+# KSAE
 
-This repo is a compact research sandbox for exploring fast sparse latent representations via LISTA, Koopman autoencoders (KAE), and their combination into a Koopman Sparse Autoencoder (KSAE) with periodic reencoding for long-horizon stability.
+This is a repo in progress.
 
 ## Quickstart
 
 ```bash
 pip install -e .[develop]
 
-# Train LISTA on synthetic sparse coding data
+# not tested: Train LISTA on synthetic sparse coding data
 python main.py train-lista --dict-dim 400 --input-dim 100 --epochs 50
 
 # Train Koopman autoencoder on Duffing (open-loop multi-step training)
-# Open-loop: encode x0 once, roll out predictions without re-encoding, sum loss over window
 python main.py train-kae \
   --system duffing \
   --num-samples 50 \
@@ -31,7 +30,8 @@ python main.py train-kae \
   --lr-koopman 1e-5 \
   --weight-decay 1e-4 \
   --inference-reencode-period 0 \
-  # Tip: omit --context-length to train on the full simulated sequence per minibatch.
+  --context-length 10
+  # Omit --context-length to train on the full simulated sequence per minibatch
 
 
 # Train Koopman autoencoder with exact CT latent integration (matrix exponential)
@@ -53,13 +53,14 @@ python main.py train-kae \
   --ode-rtol 1e-5 \
   --ode-atol 1e-7 \
   --lambda-align 1.0 \
-  --lambda-recon 0.02 \
+  --lambda-recon 1.0 \
   --lambda-pred 0.0 \
   --lambda-sparse 1e-3 \
-  --lr-main 1e-5 \
-  --lr-koopman 1e-6 \
+  --lr-main 1e-4 \
+  --lr-koopman 1e-5 \
   --weight-decay 1e-4 \
   --inference-reencode-period 500 \
+  --context-length 10
   # For long-trajectory training, omit --context-length; using a small value trains on short windows.
 
 # Evaluate KoopmanAE with paper-style metrics (automatic PR search)
@@ -125,20 +126,3 @@ Adjust hyperparameters directly on the CLI; each run stores a JSON snapshot of t
 - `python main.py eval-lista --checkpoint ...` prints code MSE, reconstruction MSE, PSNR, and sparsity vs. target codes.
 - `python main.py eval-kae --checkpoint ... --test-rollout-steps 1000 --inference-reencode-period 25 --plot-dir plots/kae` measures reconstruction/prediction/rollout MSE and saves phase plots.
 - `python main.py eval-ksae ...` reports identical metrics plus latent sparsity.
-
-## Sanity Checks & Light Tests
-
-Run built-in smoke tests (no external framework required):
-
-```bash
-python -m compileall main.py train.py eval.py models.py data.py losses.py utils.py
-python eval.py  # checks LISTA shrinkage and Koopman identity behaviour
-```
-
-These cover shrinkage correctness, Koopman identity rollouts, and ensure the modules import cleanly.
-
-## Notes
-
-- Dynamics datasets include Pendulum, Duffing, Lotka–Volterra, Lorenz63, and a parabolic attractor simulated with RK4 integration.
-- Periodic reencoding can be toggled separately for training (`--train-reencode-period`) and evaluation (`--inference-reencode-period` on eval commands).
-- Outputs include `metrics.json` (history of scalar metrics) alongside the best checkpoint to streamline offline analysis.
