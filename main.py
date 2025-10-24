@@ -94,7 +94,7 @@ def build_parser() -> argparse.ArgumentParser:
 def _add_koopman_train_arguments(parser: argparse.ArgumentParser, include_lista: bool = False) -> None:
     parser.add_argument("--system", type=str, default="pendulum")
     parser.add_argument("--latent-dim", type=int, default=128)
-    parser.add_argument("--sequence-length", type=int, default=10)
+    parser.add_argument("--sequence-length", type=int, default=500)
     parser.add_argument(
         "--context-length",
         type=int,
@@ -104,7 +104,7 @@ def _add_koopman_train_arguments(parser: argparse.ArgumentParser, include_lista:
     parser.add_argument("--num-samples", type=int, default=2000)
     parser.add_argument("--batch-size", type=int, default=32)
     parser.add_argument("--epochs", type=int, default=100)
-    parser.add_argument("--dt", type=float, default=0.02)
+    parser.add_argument("--dt", type=float, default=0.01)
     parser.add_argument("--noise-std", type=float, default=0.0)
     parser.add_argument("--encoder-hidden", type=int, nargs="*", default=[256, 256, 256])
     parser.add_argument("--decoder-hidden", type=int, nargs="*", default=[256, 256])
@@ -151,7 +151,7 @@ def _add_koopman_eval_arguments(parser: argparse.ArgumentParser, include_lista: 
     parser.add_argument("--checkpoint", type=str, required=True)
     parser.add_argument("--system", type=str, default="pendulum")
     parser.add_argument("--latent-dim", type=int, default=128)
-    parser.add_argument("--sequence-length", type=int, default=1001)
+    parser.add_argument("--sequence-length", type=int, default=1000)
     parser.add_argument("--num-samples", type=int, default=50)
     parser.add_argument("--batch-size", type=int, default=64)
     parser.add_argument("--dt", type=float, default=0.01)
