@@ -6,13 +6,14 @@ import math
 from pathlib import Path
 from typing import Dict, Optional
 
-import matplotlib
-matplotlib.use("Agg")
-import matplotlib.pyplot as plt
-import numpy as np
 import torch
 
 from models import KSAE, LISTA, KoopmanAE
+from plotting import (
+    save_rollout_plot,
+    save_phase_portrait,
+    save_phase_portraits_overlay,
+)
 
 
 @torch.no_grad()
@@ -57,6 +58,7 @@ def evaluate_koopman(
     reencode_period: Optional[int],
     plot_dir: Optional[Path] = None,
     max_plots: int = 0,
+    phase_portrait_samples: int = 0,
 ) -> Dict[str, float]:
     model.eval()
     recon_mse = 0.0
@@ -70,6 +72,10 @@ def evaluate_koopman(
 
     if plot_dir is not None:
         plot_dir.mkdir(parents=True, exist_ok=True)
+
+    # Accumulate trajectories for an aggregate phase-portrait plot
+    agg_true_list: list[torch.Tensor] = []
+    agg_pred_list: list[torch.Tensor] = []
 
     for batch_idx, batch in enumerate(loader):
         batch = {key: tensor.to(device) for key, tensor in batch.items()}
@@ -121,6 +127,14 @@ def evaluate_koopman(
                         # keep plots_saved aligned with the cap for total saved artifacts
                         plots_saved += 0  # no increment to let rollout+phase count as one sample
 
+                # Collect aggregate phase-portrait data (up to requested samples)
+                if plot_dir is not None and phase_portrait_samples > 0 and batch["x"].shape[-1] >= 2:
+                    remaining = phase_portrait_samples - len(agg_true_list)
+                    if remaining > 0:
+                        take = min(remaining, batch_size)
+                        agg_true_list.extend(batch["x"][:take, : horizon + 1].detach().cpu())
+                        agg_pred_list.extend(rollout[:take].detach().cpu())
+
     if count == 0:
         return {
             "reconstruction_mse": 0.0,
@@ -144,6 +158,14 @@ def evaluate_koopman(
     }
     if isinstance(model, KSAE):
         result["sparsity"] = sparsity / count if count else 0.0
+
+    # Save aggregate phase-portrait overlay if requested
+    if plot_dir is not None and phase_portrait_samples > 0 and len(agg_true_list) > 0:
+        try:
+            save_phase_portraits_overlay(agg_true_list, agg_pred_list, plot_dir / "phase_portraits_overlay.png")
+        except Exception:
+            # Do not fail evaluation due to plotting
+            pass
     return result
 
 
@@ -153,65 +175,7 @@ def compute_psnr(mse: float, peak: float = 1.0) -> float:
     return 20.0 * math.log10(peak) - 10.0 * math.log10(mse)
 
 
-def save_rollout_plot(true_sequence: torch.Tensor, predicted_sequence: torch.Tensor, horizon: int, path: Path) -> None:
-    """Create a simple plot comparing rollout trajectories."""
-    fig, axes = plt.subplots(true_sequence.shape[-1], 1, figsize=(6, 2 * true_sequence.shape[-1]))
-    if isinstance(axes, np.ndarray):
-        axes = axes.flatten().tolist()
-    elif not isinstance(axes, (list, tuple)):
-        axes = [axes]
-    time_axis = range(horizon)
-    for dim, ax in enumerate(axes):
-        ax.plot(time_axis, true_sequence[1:, dim], label="true")
-        ax.plot(time_axis, predicted_sequence[:, dim], label="pred")
-        ax.set_ylabel(f"dim {dim}")
-    axes[-1].set_xlabel("time step")
-    axes[0].legend()
-    fig.tight_layout()
-    fig.savefig(path)
-    plt.close(fig)
-
-
-def save_phase_portrait(true_sequence: torch.Tensor, predicted_sequence: torch.Tensor, path: Path) -> None:
-    """Plot phase portrait (x1 vs x2) comparing true and predicted trajectories.
-
-    Expects:
-    - true_sequence: Tensor with shape (horizon + 1, state_dim)
-    - predicted_sequence: Tensor with shape (horizon, state_dim)
-    The first dimension is time. The predicted sequence aligns with true_sequence[1:].
-    Only the first two state dimensions are plotted.
-    """
-    if true_sequence.dim() != 2 or predicted_sequence.dim() != 2:
-        raise ValueError("Sequences must be 2D tensors: (time, state_dim)")
-    if true_sequence.size(1) < 2 or predicted_sequence.size(1) < 2:
-        # Not enough dimensions for a phase portrait; no-op save to avoid breaking pipelines
-        fig, ax = plt.subplots(1, 1, figsize=(5, 4))
-        ax.text(0.5, 0.5, "Phase portrait requires ≥2 dims", ha="center", va="center")
-        ax.axis("off")
-        fig.tight_layout()
-        fig.savefig(path)
-        plt.close(fig)
-        return
-
-    # Build continuous trajectories in (x1, x2) space
-    # - True trajectory includes the initial state x0
-    # - Predicted trajectory is prepended with x0 so it starts from the same point
-    true_xy = true_sequence[:, :2]
-    pred_xy = torch.cat([true_sequence[0:1, :2], predicted_sequence[:, :2]], dim=0)
-
-    fig, ax = plt.subplots(1, 1, figsize=(5, 4))
-    ax.plot(true_xy[:, 0].numpy(), true_xy[:, 1].numpy(), label="true", color="C0", linewidth=2)
-    ax.plot(pred_xy[:, 0].numpy(), pred_xy[:, 1].numpy(), label="pred", color="C1", linewidth=2, linestyle="--")
-    ax.set_xlabel("x1")
-    ax.set_ylabel("x2")
-    ax.set_title("Phase portrait")
-    ax.set_aspect("equal", adjustable="datalim")
-    ax.grid(True, linestyle=":", alpha=0.6)
-    ax.legend()
-    fig.tight_layout()
-    fig.savefig(path)
-    plt.close(fig)
-
+## plotting utilities are now provided by plotting.py
 
 def lista_shrinkage_sanity() -> None:
     model = LISTA(dict_dim=4, input_dim=4, iterations=1)

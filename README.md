@@ -10,7 +10,8 @@ pip install -e .[develop]
 # Train LISTA on synthetic sparse coding data
 python main.py train-lista --dict-dim 400 --input-dim 100 --epochs 50
 
-# Train Koopman autoencoder on Duffing with continuous-time Koopman + Tustin, and conservative LRs
+# Train Koopman autoencoder on Duffing (open-loop multi-step training)
+# Open-loop: encode x0 once, roll out predictions without re-encoding, sum loss over window
 python main.py train-kae \
   --system duffing \
   --num-samples 50 \
@@ -20,54 +21,82 @@ python main.py train-kae \
   --encoder-hidden 256 256 256 \
   --decoder-hidden \
   --koopman-mode continuous \
+  --latent-mode disc_tustin \
   --control-discretization tustin \
   --lambda-align 1.0 \
   --lambda-recon 1.0 \
-  --lambda-pred 1.0 \
+  --lambda-pred 0.0 \
   --lambda-sparse 1e-3 \
   --lr-main 1e-4 \
   --lr-koopman 1e-5 \
   --weight-decay 1e-4 \
-  --inference-reencode-period 20 \
-  --context-length 10 
+  --inference-reencode-period 0 \
+  # Tip: omit --context-length to train on the full simulated sequence per minibatch.
 
-# Train Koopman sparse autoencoder with LISTA encoder
-python main.py train-ksae \
+
+# Train Koopman autoencoder with exact CT latent integration (matrix exponential)
+# Use SciPy offline ODE cache for data generation; open-loop multi-step loss
+python main.py train-kae \
   --system duffing \
-  --latent-dim 256 \
-  --lista-T 3 \
-  --lambda-sparse 1e-3 \
+  --epochs 300 \
+  --num-samples 50 \
+  --sequence-length 500 \
+  --dt 0.01 \
+  --latent-dim 128 \
+  --encoder-hidden 256 256 256 \
+  --decoder-hidden \
   --koopman-mode continuous \
-  --control-discretization tustin \
-  --lr-main 1e-4 \
-  --lr-koopman 1e-5 \
-  --lr-lista 1e-4 \
-  --inference-reencode-period 20
-
-# Evaluate KSAE rollouts with a fixed reencoding period (saves plots if provided)
-python main.py eval-ksae --checkpoint runs/ksae/<run>/checkpoint.pt --rollout 1000 --inference-reencode-period 25 --plot-dir plots/ksae/<run> --max-plots 100
+  --latent-mode ct_matrix_exp \
+  --gamma-method auto \
+  --use-offline-cache \
+  --cache-dir data \
+  --ode-rtol 1e-5 \
+  --ode-atol 1e-7 \
+  --lambda-align 1.0 \
+  --lambda-recon 0.02 \
+  --lambda-pred 0.0 \
+  --lambda-sparse 1e-3 \
+  --lr-main 1e-5 \
+  --lr-koopman 1e-6 \
+  --weight-decay 1e-4 \
+  --inference-reencode-period 500 \
+  # For long-trajectory training, omit --context-length; using a small value trains on short windows.
 
 # Evaluate KoopmanAE with paper-style metrics (automatic PR search)
 # Defaults for dynamical systems: dt=0.01, sequence-length=1001, num-samples=50, rollout=1000
 # Prints MSE@100 and MSE@1000 with/without PR, plus best k ∈ {10,25,50,100}
 python main.py eval-kae \
-  --checkpoint runs/kae/20251023-191828/checkpoint.pt \
+  --checkpoint runs/kae/20251024-012649/checkpoint.pt \
+  --plot-dir plots \
   --system duffing \
   --latent-dim 128 \
   --encoder-hidden 256 256 256 \
   --decoder-hidden \
-  --seed 123
+  --koopman-mode continuous \
+  --latent-mode ct_matrix_exp \
+  --gamma-method auto \
+  --ode-rtol 1e-5 \
+  --ode-atol 1e-7 \
+  --test-rollout-steps 1000 \
+  --inference-reencode-period 20 \
+  --max-plots 0 \
+  --phase-portrait-samples 100 \
+  --seed 3
 ```
 
 By default each training command writes an artefact directory under `runs/<model>/<timestamp>/` containing checkpoints, configs, and metric history; evaluation commands print metrics to stdout and optionally emit rollout plots with `--plot-dir`.
 
 Optional knobs of interest:
 - `--normalize-decoder-columns/--no-normalize-decoder-columns` (default on): column-normalize decoder to avoid degenerate tiny latents.
-- `--koopman-mode {continuous,discrete}` with `--control-discretization {tustin,zoh}` for dynamics parameterization.
+- `--koopman-mode {continuous,discrete}` controls whether dynamics are parameterized in CT (A,B) or DT (K,L).
+- Latent dynamics (CT only): `--latent-mode {ct_matrix_exp,disc_tustin}`.
+  - `ct_matrix_exp` uses exact Φ=exp(AΔt) and Γ integral; pick `--gamma-method {auto,inverse,augmented}`.
+  - `disc_tustin` uses bilinear (Tustin) for A; input mapping uses `--control-discretization {tustin,zoh}`.
 - Learning rates: `--lr-main` (encoder/decoder), `--lr-koopman` (dynamics), `--lr-lista` (KSAE encoder).
 - `--lambda-sparse` adds small L1 (default `1e-3`) on Koopman embeddings (KSAE and KAE).
 - Re-encoding: `--inference-reencode-period` (eval) and `--train-reencode-period` (training) support 0 (off), 20, or 50 as beneficial settings.
  - Training windows: `--context-length T` samples windowed minibatches of length T prediction steps (uses T+1 states). Set `--sequence-length S` to the per-trajectory simulated length (e.g., S=500 as in §4.1).
+ - Offline data cache (SciPy, ground-truth only): `--use-offline-cache --cache-dir data --ode-rtol 1e-5 --ode-atol 1e-7`.
 
 ## Repository Layout
 
@@ -94,7 +123,7 @@ Adjust hyperparameters directly on the CLI; each run stores a JSON snapshot of t
 ## Evaluation & Plots
 
 - `python main.py eval-lista --checkpoint ...` prints code MSE, reconstruction MSE, PSNR, and sparsity vs. target codes.
-- `python main.py eval-kae --checkpoint ... --rollout 1000 --inference-reencode-period 25 --plot-dir plots/kae` measures reconstruction/prediction/rollout MSE and saves phase plots.
+- `python main.py eval-kae --checkpoint ... --test-rollout-steps 1000 --inference-reencode-period 25 --plot-dir plots/kae` measures reconstruction/prediction/rollout MSE and saves phase plots.
 - `python main.py eval-ksae ...` reports identical metrics plus latent sparsity.
 
 ## Sanity Checks & Light Tests

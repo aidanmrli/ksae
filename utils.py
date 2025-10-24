@@ -7,7 +7,7 @@ import logging
 import random
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, Iterable, Optional
+from typing import Any, Dict, Iterable, Optional, Tuple
 
 import numpy as np
 import torch
@@ -94,3 +94,120 @@ def flatten_dict(metrics: Dict[str, Any], prefix: str = "") -> Dict[str, Any]:
         else:
             flat[full_key] = value
     return flat
+
+
+# ---------------------------------------------------------------------------
+# ODE discretization utilities for linear continuous-time systems
+# ---------------------------------------------------------------------------
+
+
+def make_time_grid(num_steps: int, dt: float, start_time: float = 0.0) -> torch.Tensor:
+    """Create a 1D time grid tensor of length num_steps+1 starting at start_time.
+
+    The grid corresponds to [t0, t0+dt, ..., t0+num_steps*dt].
+    """
+    if num_steps < 0:
+        raise ValueError("num_steps must be >= 0")
+    # Use float32 for broad compatibility; consumers can .to(dtype) as needed
+    times = torch.arange(0, num_steps + 1, dtype=torch.float32) * float(dt) + float(start_time)
+    return times
+
+
+def _compute_gamma_via_inverse(
+    A: torch.Tensor,
+    Phi: torch.Tensor,
+    B: torch.Tensor,
+    *,
+    eps: float = 1e-8,
+) -> Optional[torch.Tensor]:
+    """Compute Γ = A^{-1}(Φ - I)B when A is well-conditioned.
+
+    Returns None if a numerical issue is detected (ill-conditioned A).
+    """
+    n = A.shape[0]
+    I = torch.eye(n, device=A.device, dtype=A.dtype)
+    # Heuristic conditioning check: use smallest singular value threshold
+    try:
+        svals = torch.linalg.svdvals(A)
+        min_sv = torch.min(svals)
+        max_sv = torch.max(svals)
+        # If A is near-singular or extremely ill-conditioned, fall back
+        if not torch.isfinite(min_sv) or min_sv < eps or (torch.isfinite(max_sv) and (max_sv / min_sv) > 1e6):
+            return None
+    except RuntimeError:
+        # SVD may fail on some devices/dtypes; fall back to augmented expm
+        return None
+    rhs = (Phi - I) @ B
+    try:
+        Gamma = torch.linalg.solve(A, rhs)
+        return Gamma
+    except RuntimeError:
+        return None
+
+
+def _compute_gamma_via_augmented_expm(A: torch.Tensor, B: torch.Tensor, dt: float) -> torch.Tensor:
+    """Compute Γ using augmented matrix exponential.
+
+    expm( [A B; 0 0] dt ) = [ Φ  Γ; 0  I ]  => top-right block is Γ.
+    """
+    n = A.shape[0]
+    m = B.shape[1]
+    Z = torch.zeros((n + m, n + m), dtype=A.dtype, device=A.device)
+    Z[:n, :n] = A
+    Z[:n, n:] = B
+    M = torch.linalg.matrix_exp(Z * float(dt))
+    Gamma = M[:n, n:]
+    return Gamma
+
+
+def discretize_linear_ct_matrix_exp(
+    A: torch.Tensor,
+    B: Optional[torch.Tensor],
+    dt: float | torch.Tensor,
+    *,
+    gamma_method: str = "auto",
+) -> Tuple[torch.Tensor, Optional[torch.Tensor]]:
+    """Discretize linear CT system z' = A z + B u with zero-order hold input.
+
+    Returns (Φ, Γ) where Φ = exp(A dt), Γ = ∫_0^{dt} exp(A s) B ds.
+    If B is None or has zero columns, Γ is None.
+
+    gamma_method: 'auto' (default), 'inverse', or 'augmented'.
+    """
+    if isinstance(dt, torch.Tensor):
+        dt_val = float(dt.detach().cpu().item())
+    else:
+        dt_val = float(dt)
+    Phi = torch.linalg.matrix_exp(A * dt_val)
+    if B is None or B.numel() == 0:
+        return Phi, None
+    method = gamma_method
+    if method not in ("auto", "inverse", "augmented"):
+        raise ValueError("gamma_method must be one of {'auto','inverse','augmented'}")
+    if method == "inverse":
+        Gamma = _compute_gamma_via_inverse(A, Phi, B)
+        if Gamma is None:
+            # Fallback silently if inverse path not viable
+            Gamma = _compute_gamma_via_augmented_expm(A, B, dt_val)
+        return Phi, Gamma
+    if method == "augmented":
+        return Phi, _compute_gamma_via_augmented_expm(A, B, dt_val)
+    # auto: try inverse-based formula, then fall back
+    Gamma = _compute_gamma_via_inverse(A, Phi, B)
+    if Gamma is None:
+        Gamma = _compute_gamma_via_augmented_expm(A, B, dt_val)
+    return Phi, Gamma
+
+
+# Optional regularizers (kept lightweight for experimentation)
+def frobenius_penalty(A: torch.Tensor, weight: float = 1.0) -> torch.Tensor:
+    """Frobenius norm penalty on a matrix parameter."""
+    return weight * torch.sum(A * A)
+
+
+def spectral_radius_upper_bound(A: torch.Tensor) -> torch.Tensor:
+    """Return a differentiable upper bound on the spectral radius via ||A||_2.
+
+    This computes the operator 2-norm (largest singular value).
+    """
+    return torch.linalg.norm(A, ord=2)

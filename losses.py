@@ -51,7 +51,9 @@ def compute_koopman_losses(
     2. Reconstruction: L_Reconst = Σ ||x_{t+i} - ψ(z_{t+i})||²
     3. Prediction: L_Pred = Σ ||x_{t+i} - ψ(ẑ_{t+i})||²
     
-    where ẑ denotes latents obtained by advancing with Koopman dynamics.
+    where ẑ denotes latents obtained by advancing with Koopman dynamics,
+    x denotes the original observations, and 
+    ψ and φ denote the decoder and encoder respectively.
     """
     global _SHAPES_PRINTED
     

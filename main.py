@@ -10,8 +10,16 @@ from typing import Optional
 import torch
 from torch.utils.data import DataLoader
 
-from data import create_dynamics_dataloaders, create_lista_datasets, SYSTEM_REGISTRY, DynamicalSystemDataset
+from data import (
+    create_dynamics_dataloaders,
+    create_lista_datasets,
+    SYSTEM_REGISTRY,
+    DynamicalSystemDataset,
+    CachedDynamicalSystemDataset,
+    load_or_generate_cached,
+)
 from eval import evaluate_koopman, evaluate_lista
+from plotting import save_phase_portraits_overlay
 from models import KSAE, LISTA, KoopmanAE
 from train import train_kae, train_lista, train_ksae
 from utils import resolve_device, set_seed
@@ -119,11 +127,15 @@ def _add_koopman_train_arguments(parser: argparse.ArgumentParser, include_lista:
     parser.add_argument("--lambda-pred", type=float, default=1.0)
     parser.add_argument("--lambda-frob", type=float, default=0.0)
     parser.add_argument("--lambda-sparse", type=float, default=1e-3, help="L1 penalty on latent embeddings")
-    parser.add_argument("--eval-rollout", type=int, default=200)
+    parser.add_argument("--val-rollout-steps", type=int, default=490)
     parser.add_argument("--inference-reencode-period", type=int, default=20, help="Period for reencoding during evaluation")
     parser.add_argument("--train-reencode-period", type=int, default=0, help="Use rollout-based training loss with this period if > 0")
     parser.add_argument("--koopman-mode", type=str, choices=["continuous", "discrete"], default="continuous",
                         help="Parameterization of Koopman dynamics")
+    parser.add_argument("--latent-mode", type=str, choices=["ct_matrix_exp", "disc_tustin"], default="ct_matrix_exp",
+                        help="Online latent dynamics integrator")
+    parser.add_argument("--gamma-method", type=str, choices=["auto", "inverse", "augmented"], default="auto",
+                        help="Computation method for control response Γ in ct_matrix_exp mode")
     parser.add_argument(
         "--control-discretization",
         type=str,
@@ -139,6 +151,11 @@ def _add_koopman_train_arguments(parser: argparse.ArgumentParser, include_lista:
     parser.add_argument("--seed", type=int, default=123)
     parser.add_argument("--device", type=str, default=None)
     parser.add_argument("--output-dir", type=str, default="runs")
+    # Offline SciPy cache controls
+    parser.add_argument("--use-offline-cache", action="store_true", help="Use SciPy-integrated cached trajectories for data")
+    parser.add_argument("--cache-dir", type=str, default="data")
+    parser.add_argument("--ode-rtol", type=float, default=1e-5)
+    parser.add_argument("--ode-atol", type=float, default=1e-7)
     if include_lista:
         parser.add_argument("--lista-T", type=int, default=3)
         parser.add_argument("--freeze-lista-epochs", type=int, default=20)
@@ -160,11 +177,20 @@ def _add_koopman_eval_arguments(parser: argparse.ArgumentParser, include_lista: 
     parser.add_argument("--decoder-hidden", type=int, nargs="*", default=[256, 256])
     parser.add_argument("--action-encoder-layers", type=int, nargs="*", default=[], help="Hidden sizes for action encoder MLP")
     parser.add_argument("--koopman-mode", type=str, choices=["continuous", "discrete"], default="continuous")
+    parser.add_argument("--latent-mode", type=str, choices=["ct_matrix_exp", "disc_tustin"], default="ct_matrix_exp")
+    parser.add_argument("--gamma-method", type=str, choices=["auto", "inverse", "augmented"], default="auto")
     parser.add_argument("--control-discretization", type=str, choices=["tustin", "zoh"], default="tustin")
-    parser.add_argument("--rollout", type=int, default=1000)
+    parser.add_argument("--test-rollout-steps", type=int, default=1000)
     parser.add_argument("--inference-reencode-period", type=int, default=0)
     parser.add_argument("--plot-dir", type=str, default=None)
     parser.add_argument("--max-plots", type=int, default=0)
+    parser.add_argument("--phase-portrait-samples", type=int, default=0,
+                        help="Number of trajectories to overlay in a single phase portrait figure (0 to disable)")
+    # Offline cache for ground-truth trajectories
+    parser.add_argument("--use-offline-cache", action="store_true")
+    parser.add_argument("--cache-dir", type=str, default="data")
+    parser.add_argument("--ode-rtol", type=float, default=1e-5)
+    parser.add_argument("--ode-atol", type=float, default=1e-7)
     parser.add_argument("--seed", type=int, default=123)
     parser.add_argument("--device", type=str, default=None)
     if include_lista:
@@ -204,14 +230,28 @@ def run_eval_koopman(args: argparse.Namespace, model_type: str) -> None:
         num_samples = args.num_samples if args.num_samples is not None else 50
         seq_len = max(int(args.sequence_length), 1001)
         spec = SYSTEM_REGISTRY[args.system]
-        test_dataset = DynamicalSystemDataset(
-            spec,
-            num_samples=num_samples,
-            seq_len=seq_len,
-            dt=args.dt,
-            noise_std=args.noise_std,
-            seed=args.seed,
-        )
+        if args.use_offline_cache and spec.control_dim == 0:
+            trajs, ctrls = load_or_generate_cached(
+                spec,
+                num_samples=num_samples,
+                seq_len=seq_len,
+                dt=args.dt,
+                noise_std=args.noise_std,
+                seed=args.seed,
+                cache_dir=args.cache_dir,
+                rtol=args.ode_rtol,
+                atol=args.ode_atol,
+            )
+            test_dataset = CachedDynamicalSystemDataset(spec, trajectories=trajs, controls=ctrls)
+        else:
+            test_dataset = DynamicalSystemDataset(
+                spec,
+                num_samples=num_samples,
+                seq_len=seq_len,
+                dt=args.dt,
+                noise_std=args.noise_std,
+                seed=args.seed,
+            )
         test_loader = DataLoader(test_dataset, batch_size=args.batch_size, shuffle=False)
 
         encoder_hidden = _parse_hidden(args.encoder_hidden)
@@ -227,6 +267,8 @@ def run_eval_koopman(args: argparse.Namespace, model_type: str) -> None:
             koopman_continuous=(args.koopman_mode == "continuous"),
             dt=args.dt,
             control_discretization=args.control_discretization,
+            latent_mode=args.latent_mode,
+            gamma_method=args.gamma_method,
             action_encoder_layers=action_encoder_layers,
         )
         checkpoint = torch.load(args.checkpoint, map_location=device)
@@ -254,6 +296,35 @@ def run_eval_koopman(args: argparse.Namespace, model_type: str) -> None:
                 total_mse += batch_mse * x.size(0)
                 total_count += x.size(0)
             return total_mse / total_count if total_count > 0 else 0.0
+
+        # Optional: aggregate phase portraits overlay across the test set
+        if args.plot_dir is not None and args.phase_portrait_samples > 0 and test_loader.dataset.spec.state_dim >= 2:  # type: ignore[attr-defined]
+            plot_dir = Path(args.plot_dir)
+            plot_dir.mkdir(parents=True, exist_ok=True)
+            agg_true_list = []
+            agg_pred_list = []
+            h_overlay = max(1, min(int(args.test_rollout_steps), test_loader.dataset.trajectories.shape[1] - 1))  # type: ignore[attr-defined]
+            for batch in test_loader:
+                batch = {k: v.to(device) for k, v in batch.items()}
+                x = batch["x"]
+                h = min(h_overlay, x.shape[1] - 1)
+                if h <= 0:
+                    continue
+                controls = batch.get("u")
+                if controls is not None:
+                    controls = controls[:, :h]
+                rollout = model.rollout(x[:, 0], h, reencode_period=args.inference_reencode_period, controls=controls)
+                remaining = args.phase_portrait_samples - len(agg_true_list)
+                if remaining <= 0:
+                    break
+                take = min(remaining, x.size(0))
+                agg_true_list.extend(x[:take, : h + 1].detach().cpu())
+                agg_pred_list.extend(rollout[:take].detach().cpu())
+            if len(agg_true_list) > 0:
+                try:
+                    save_phase_portraits_overlay(agg_true_list, agg_pred_list, plot_dir / "phase_portraits_overlay.png")
+                except Exception:
+                    pass
 
         horizons = [100, 1000]
         pr_candidates = [10, 25, 50, 100]
@@ -297,6 +368,10 @@ def run_eval_koopman(args: argparse.Namespace, model_type: str) -> None:
         dt=args.dt,
         noise_std=args.noise_std,
         seed=args.seed,
+        use_offline_cache=args.use_offline_cache,
+        cache_dir=args.cache_dir,
+        ode_rtol=args.ode_rtol,
+        ode_atol=args.ode_atol,
     )
 
     encoder_hidden = _parse_hidden(args.encoder_hidden)
@@ -325,6 +400,8 @@ def run_eval_koopman(args: argparse.Namespace, model_type: str) -> None:
             koopman_continuous=(args.koopman_mode == "continuous"),
             dt=args.dt,
             control_discretization=args.control_discretization,
+            latent_mode=args.latent_mode,
+            gamma_method=args.gamma_method,
             action_encoder_layers=action_encoder_layers,
         )
 
@@ -337,10 +414,11 @@ def run_eval_koopman(args: argparse.Namespace, model_type: str) -> None:
         model,
         test_loader,
         device,
-        rollout_horizon=args.rollout,
+        rollout_horizon=args.test_rollout_steps,
         reencode_period=args.inference_reencode_period,
         plot_dir=plot_dir,
         max_plots=args.max_plots,
+        phase_portrait_samples=args.phase_portrait_samples,
     )
     print(json.dumps(metrics, indent=2))
 

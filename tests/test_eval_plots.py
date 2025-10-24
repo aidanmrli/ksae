@@ -4,7 +4,7 @@ from pathlib import Path
 
 import torch
 
-from eval import save_phase_portrait, save_rollout_plot
+from plotting import save_phase_portrait, save_rollout_plot, save_phase_portraits_overlay
 from models import KoopmanAE
 
 
@@ -41,4 +41,30 @@ def test_tustin_discretization_step_runs() -> None:
     assert out["predictions"].shape == (3, 5, 2)
     roll = model.rollout(x[:, 0], horizon=5, reencode_period=2)
     assert roll.shape == (3, 5, 2)
+
+
+def test_phase_portraits_overlay_saves(tmp_path: Path) -> None:
+    # Create a few short synthetic trajectories
+    n = 5
+    horizon = 30
+    true_list = []
+    pred_list = []
+    for i in range(n):
+        t = torch.linspace(0, 2 * torch.pi, steps=horizon + 1)
+        # Slightly different radius per traj
+        r = 1.0 + 0.05 * i
+        x1 = r * torch.cos(t)
+        x2 = r * torch.sin(t)
+        true_sequence = torch.stack([x1, x2], dim=1)
+        # Predicted: small phase shift
+        tp = torch.linspace(0, 2 * torch.pi, steps=horizon)
+        x1p = r * torch.cos(tp + 0.03 * i)
+        x2p = r * torch.sin(tp + 0.03 * i)
+        pred_sequence = torch.stack([x1p, x2p], dim=1)
+        true_list.append(true_sequence)
+        pred_list.append(pred_sequence)
+
+    out_path = tmp_path / "overlay.png"
+    save_phase_portraits_overlay(true_list, pred_list, out_path)
+    assert out_path.exists() and out_path.stat().st_size > 0
 

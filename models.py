@@ -7,6 +7,7 @@ from typing import Dict, List, Optional, Sequence
 import torch
 from torch import nn
 from torch.nn import functional as F
+from utils import discretize_linear_ct_matrix_exp
 
 
 def soft_threshold(values: torch.Tensor, theta: torch.Tensor) -> torch.Tensor:
@@ -109,6 +110,8 @@ class KoopmanAE(nn.Module):
         koopman_continuous: bool = True,
         dt: float = 0.01,
         control_discretization: str = "tustin",
+        latent_mode: str = "ct_matrix_exp",
+        gamma_method: str = "auto",
         action_encoder_layers: Sequence[int] | None = None,
     ) -> None:
         super().__init__()
@@ -121,6 +124,12 @@ class KoopmanAE(nn.Module):
         if control_discretization not in ("tustin", "zoh"):
             raise ValueError("control_discretization must be one of {'tustin','zoh'}")
         self.control_discretization = control_discretization
+        if latent_mode not in ("ct_matrix_exp", "disc_tustin"):
+            raise ValueError("latent_mode must be one of {'ct_matrix_exp','disc_tustin'}")
+        self.latent_mode = latent_mode
+        if gamma_method not in ("auto", "inverse", "augmented"):
+            raise ValueError("gamma_method must be one of {'auto','inverse','augmented'}")
+        self.gamma_method = gamma_method
 
         self.state_encoder = build_mlp(input_dim, latent_dim, hidden_dims=encoder_hidden)
         if decoder_hidden is None:
@@ -163,19 +172,34 @@ class KoopmanAE(nn.Module):
         if z.dim() == 3:
             batch, seq_len, feat = z.shape
             decoded = self.state_decoder(z.view(-1, feat))
+            # print(f"decoded: {decoded.shape}")
+            # print(f"batch: {batch}")
+            # print(f"seq_len: {seq_len}")
+            # print(f"feat: {feat}")
+            # print(f"self.input_dim: {self.input_dim}")
             return decoded.view(batch, seq_len, self.input_dim)
+        # print(f"z: {z.shape}")
         return self.state_decoder(z)
 
     def _discretized_matrices(self) -> tuple[torch.Tensor, Optional[torch.Tensor]]:
-        """Return (K_d, L_d) for one-step update using bilinear discretization if enabled."""
+        """Return (K_d, L_d) for one-step update based on latent_mode.
+
+        - If not continuous, return learned discrete (K, L).
+        - If continuous and latent_mode == 'ct_matrix_exp', use matrix exponential.
+        - If continuous and latent_mode == 'disc_tustin', use bilinear (Tustin) discretization.
+        """
         if not self.koopman_continuous:
             K = getattr(self, "K")
             L = getattr(self, "L", None)
             return K, L
         A = self.A
         B = self.B
-        I = torch.eye(self.latent_dim, device=A.device, dtype=A.dtype)
         delta = self.delta
+        if self.latent_mode == "ct_matrix_exp":
+            Kd, Ld = discretize_linear_ct_matrix_exp(A, B, delta, gamma_method=self.gamma_method)
+            return Kd, Ld
+        # disc_tustin path: bilinear transform
+        I = torch.eye(self.latent_dim, device=A.device, dtype=A.dtype)
         half_dt = 0.5 * delta
         M = I - half_dt * A
         N = I + half_dt * A
@@ -185,7 +209,7 @@ class KoopmanAE(nn.Module):
         if self.control_dim > 0 and B is not None:
             if self.control_discretization == "tustin":
                 Ld = torch.linalg.solve(M, delta * B)
-            else:  # zoh (coarse approximation)
+            else:  # zoh
                 Ld = delta * B
         return Kd, Ld
 
@@ -305,6 +329,8 @@ class KSAE(nn.Module):
         koopman_continuous: bool = True,
         dt: float = 0.01,
         control_discretization: str = "tustin",
+        latent_mode: str = "ct_matrix_exp",
+        gamma_method: str = "auto",
         action_encoder_layers: Sequence[int] | None = None,
     ) -> None:
         super().__init__()
@@ -317,6 +343,12 @@ class KSAE(nn.Module):
         if control_discretization not in ("tustin", "zoh"):
             raise ValueError("control_discretization must be one of {'tustin','zoh'}")
         self.control_discretization = control_discretization
+        if latent_mode not in ("ct_matrix_exp", "disc_tustin"):
+            raise ValueError("latent_mode must be one of {'ct_matrix_exp','disc_tustin'}")
+        self.latent_mode = latent_mode
+        if gamma_method not in ("auto", "inverse", "augmented"):
+            raise ValueError("gamma_method must be one of {'auto','inverse','augmented'}")
+        self.gamma_method = gamma_method
 
         self.state_encoder = LISTA(dict_dim=latent_dim, input_dim=input_dim, iterations=lista_iterations)
         self.state_decoder = build_mlp(latent_dim, input_dim, hidden_dims=decoder_hidden or (), activation="relu")
@@ -352,9 +384,16 @@ class KSAE(nn.Module):
 
     def decode(self, z: torch.Tensor) -> torch.Tensor:
         if z.dim() == 3:
+            print(f"z: {z.shape}")
             batch, seq_len, feat = z.shape
             decoded = self.state_decoder(z.view(-1, feat))
+            print(f"decoded: {decoded.shape}")
+            print(f"batch: {batch}")
+            print(f"seq_len: {seq_len}")
+            print(f"feat: {feat}")
+            print(f"self.input_dim: {self.input_dim}")
             return decoded.view(batch, seq_len, self.input_dim)
+        print(f"z: {z.shape}")
         return self.state_decoder(z)
 
     def _discretized_matrices(self) -> tuple[torch.Tensor, Optional[torch.Tensor]]:
@@ -364,8 +403,11 @@ class KSAE(nn.Module):
             return K, L
         A = self.A
         B = self.B
-        I = torch.eye(self.latent_dim, device=A.device, dtype=A.dtype)
         delta = self.delta
+        if self.latent_mode == "ct_matrix_exp":
+            Kd, Ld = discretize_linear_ct_matrix_exp(A, B, delta, gamma_method=self.gamma_method)
+            return Kd, Ld
+        I = torch.eye(self.latent_dim, device=A.device, dtype=A.dtype)
         half_dt = 0.5 * delta
         M = I - half_dt * A
         N = I + half_dt * A
@@ -419,6 +461,7 @@ class KSAE(nn.Module):
         Kd, Ld = self._discretized_matrices()
         # Vectorized one-step prediction for all time steps
         z_t = encoded[:, :-1]
+        # this is vector of predicted z_{t+1} for all timesteps t = 1, ..., T-1
         predicted_latents_tensor = F.linear(z_t, Kd)
         if self.control_dim > 0 and u is not None and Ld is not None:
             u_seq = u[:, : predicted_latents_tensor.size(1)]

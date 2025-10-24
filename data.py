@@ -8,6 +8,8 @@ from typing import Callable, Dict, Iterable, Optional, Sequence, Tuple
 import numpy as np
 import torch
 from torch.utils.data import DataLoader, Dataset, random_split
+from pathlib import Path
+from scipy.integrate import solve_ivp
 
 
 # ---------------------------------------------------------------------------
@@ -172,6 +174,24 @@ class DynamicalSystemDataset(Dataset[Dict[str, torch.Tensor]]):
         if self.controls is not None:
             batch["u"] = self.controls[index]
         return batch
+
+
+class CachedDynamicalSystemDataset(DynamicalSystemDataset):
+    """Dataset backed by cached trajectories stored on disk.
+
+    This subclasses DynamicalSystemDataset for compatibility with existing wrappers.
+    """
+
+    def __init__(
+        self,
+        spec: DynamicalSystemSpec,
+        trajectories: np.ndarray,
+        controls: Optional[np.ndarray] = None,
+    ) -> None:
+        # Bypass parent generation; just set attributes
+        self.spec = spec
+        self.trajectories = torch.from_numpy(trajectories.astype(np.float32))
+        self.controls = torch.from_numpy(controls.astype(np.float32)) if controls is not None else None
 
 
 # ---------------------------------------------------------------------------
@@ -461,13 +481,31 @@ def create_dynamics_dataloaders(
     seed: int = 0,
     splits: Sequence[float] = (0.8, 0.1, 0.1),
     train_context_length: int | None = None,
+    use_offline_cache: bool = False,
+    cache_dir: str | Path = "data",
+    ode_rtol: float = 1e-5,
+    ode_atol: float = 1e-7,
 ) -> Tuple[
     DataLoader[Dict[str, torch.Tensor]],
     DataLoader[Dict[str, torch.Tensor]],
     DataLoader[Dict[str, torch.Tensor]],
 ]:
     spec = SYSTEM_REGISTRY[system]
-    dataset = DynamicalSystemDataset(spec, num_samples=num_samples, seq_len=seq_len, dt=dt, noise_std=noise_std, seed=seed)
+    if use_offline_cache and spec.control_dim == 0:
+        trajectories, controls = load_or_generate_cached(
+            spec,
+            num_samples=num_samples,
+            seq_len=seq_len,
+            dt=dt,
+            noise_std=noise_std,
+            seed=seed,
+            cache_dir=cache_dir,
+            rtol=ode_rtol,
+            atol=ode_atol,
+        )
+        dataset = CachedDynamicalSystemDataset(spec, trajectories=trajectories, controls=controls)
+    else:
+        dataset = DynamicalSystemDataset(spec, num_samples=num_samples, seq_len=seq_len, dt=dt, noise_std=noise_std, seed=seed)
     train_frac, val_frac, test_frac = splits
     assert abs(train_frac + val_frac + test_frac - 1.0) < 1e-6, "Splits must sum to 1.0"
     train_size = int(len(dataset) * train_frac)
@@ -494,3 +532,106 @@ def create_dynamics_dataloaders(
         create_dataloader(val_set, batch_size=batch_size, shuffle=False),
         create_dataloader(test_set, batch_size=batch_size, shuffle=False),
     )
+
+
+# ---------------------------------------------------------------------------
+# SciPy-based offline ODE integration and caching
+# ---------------------------------------------------------------------------
+
+
+def integrate_spec_scipy(
+    spec: DynamicalSystemSpec,
+    x0: np.ndarray,
+    num_steps: int,
+    dt: float,
+    *,
+    rtol: float = 1e-5,
+    atol: float = 1e-7,
+) -> np.ndarray:
+    """Integrate a system with SciPy solve_ivp over a fixed grid.
+
+    Returns states with shape (num_steps, state_dim) or (num_steps+1?),
+    We generate exactly `num_steps` states to align with dataset convention of seq_len.
+    """
+    t0 = 0.0
+    t1 = float((num_steps - 1) * dt)
+    t_eval = np.linspace(t0, t1, num_steps, dtype=np.float64)
+
+    def rhs(t: float, y: np.ndarray) -> np.ndarray:
+        return spec.dynamics(float(t), y.astype(np.float32), None).astype(np.float64)
+
+    sol = solve_ivp(rhs, (t0, t1), x0.astype(np.float64), method="RK45", t_eval=t_eval, rtol=rtol, atol=atol)
+    if not sol.success:
+        raise RuntimeError(f"solve_ivp failed: {sol.message}")
+    states = sol.y.T.astype(np.float32)
+    return states
+
+
+def generate_scipy_trajectories(
+    spec: DynamicalSystemSpec,
+    num_samples: int,
+    seq_len: int,
+    dt: float,
+    noise_std: float,
+    seed: int,
+    *,
+    rtol: float = 1e-5,
+    atol: float = 1e-7,
+) -> Tuple[np.ndarray, Optional[np.ndarray]]:
+    rng = np.random.default_rng(seed)
+    trajs = np.zeros((num_samples, seq_len, spec.state_dim), dtype=np.float32)
+    for i in range(num_samples):
+        x0 = spec.init_sampler(rng).astype(np.float32)
+        states = integrate_spec_scipy(spec, x0, seq_len, dt, rtol=rtol, atol=atol)
+        if noise_std > 0:
+            states = states + rng.normal(scale=noise_std, size=states.shape).astype(np.float32)
+        trajs[i] = states
+    controls = None
+    return trajs, controls
+
+
+def _cache_filename(
+    spec: DynamicalSystemSpec,
+    *,
+    num_samples: int,
+    seq_len: int,
+    dt: float,
+    noise_std: float,
+    seed: int,
+) -> str:
+    return f"{spec.name}_N{num_samples}_T{seq_len}_dt{dt:.6f}_noise{noise_std:.6f}_seed{seed}.npz"
+
+
+def load_or_generate_cached(
+    spec: DynamicalSystemSpec,
+    *,
+    num_samples: int,
+    seq_len: int,
+    dt: float,
+    noise_std: float,
+    seed: int,
+    cache_dir: str | Path = "data",
+    rtol: float = 1e-5,
+    atol: float = 1e-7,
+) -> Tuple[np.ndarray, Optional[np.ndarray]]:
+    cache_path = Path(cache_dir)
+    cache_path.mkdir(parents=True, exist_ok=True)
+    fname = _cache_filename(spec, num_samples=num_samples, seq_len=seq_len, dt=dt, noise_std=noise_std, seed=seed)
+    fpath = cache_path / fname
+    if fpath.exists():
+        data = np.load(fpath)
+        trajs = data["trajectories"].astype(np.float32)
+        ctrls = data["controls"].astype(np.float32) if "controls" in data and data["controls"].size > 0 else None
+        return trajs, ctrls
+    trajs, ctrls = generate_scipy_trajectories(
+        spec,
+        num_samples=num_samples,
+        seq_len=seq_len,
+        dt=dt,
+        noise_std=noise_std,
+        seed=seed,
+        rtol=rtol,
+        atol=atol,
+    )
+    np.savez_compressed(fpath, trajectories=trajs, controls=(ctrls if ctrls is not None else np.array([])))
+    return trajs, ctrls
