@@ -393,31 +393,8 @@ def _train_koopman_epoch(
         # In the state-prediction setup (no controls), encode x0 once, integrate forward in latent
         # space without re-encoding, decode at each step, and sum/average the prediction error
         # over the rollout window. This replaces the teacher-forced one-step prediction loss.
-        if weights.prediction > 0:
-            seq_horizon = batch["x"].shape[1] - 1
-            if seq_horizon > 0:
-                # Ignore controls for the state-prediction setup; fall back to provided controls otherwise
-                controls = None
-                if getattr(model, "control_dim", 0) > 0:
-                    controls = batch.get("u")
-                    if controls is not None:
-                        controls = controls[:, :seq_horizon]
-                rollout = model.rollout(
-                    batch["x"][:, 0],
-                    horizon=seq_horizon,
-                    reencode_period=None,  # pure open-loop; no periodic re-encoding during training
-                    controls=controls,
-                )
-                target = batch["x"][:, 1 : seq_horizon + 1]
-                rollout_mse = torch.mean((rollout - target) ** 2)
-                # Replace teacher-forced prediction term (if it was included) with open-loop loss
-                if "prediction" in components:
-                    total_loss = total_loss - weights.prediction * components["prediction"]
-                total_loss = total_loss + weights.prediction * rollout_mse
-                pred_meter.update((weights.prediction * rollout_mse).item(), batch_size)
-            else:
-                if "prediction" in components:
-                    pred_meter.update((weights.prediction * components["prediction"]).item(), batch_size)
+        if "prediction" in components:
+            pred_meter.update((weights.prediction * components["prediction"]).item(), batch_size)
         total_loss.backward()
         if getattr(args, "grad_clip", None):
             clip_grad_norm_(model.parameters(), args.grad_clip)

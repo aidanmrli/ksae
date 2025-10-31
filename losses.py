@@ -38,99 +38,68 @@ class KoopmanLossWeights:
 _SHAPES_PRINTED = False
 
 
+def mean_l2_norm_loss(pred: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
+    """Computes the mean of L2 norms between predictions and targets."""
+    return torch.linalg.norm(pred - target, ord=2, dim=-1).mean()
+
+
 def compute_koopman_losses(
     outputs: Dict[str, torch.Tensor],
     batch: Dict[str, torch.Tensor],
     model: torch.nn.Module,
     weights: KoopmanLossWeights,
 ) -> tuple[torch.Tensor, Dict[str, torch.Tensor]]:
-    """Aggregate the individual loss terms for Koopman-style models.
-    
-    Implements the three core losses from the paper (Eq. 7):
-    1. Alignment: L_Align = Σ ||ẑ_{t+i} - φ(x_{t+i})||²
-    2. Reconstruction: L_Reconst = Σ ||x_{t+i} - ψ(z_{t+i})||²
-    3. Prediction: L_Pred = Σ ||x_{t+i} - ψ(ẑ_{t+i})||²
-    
-    where ẑ denotes latents obtained by advancing with Koopman dynamics,
-    x denotes the original observations, and 
-    ψ and φ denote the decoder and encoder respectively.
-    """
-    global _SHAPES_PRINTED
-    
+    """Aggregate the individual loss terms for Koopman-style models."""
     components: Dict[str, torch.Tensor] = {}
-    encoded = outputs.get("encoded")
-    predicted_latents = outputs.get("predicted_latents")
-    reconstructions = outputs.get("reconstructions")
-    predictions = outputs.get("predictions")
+    total_loss = torch.tensor(0.0, device=next(model.parameters()).device)
 
-    # ===== Alignment Loss: L_Align =====
-    # Compare predicted latents (from Koopman dynamics) with re-encoded future observations
-    # Prevents K, L from drifting away from what φ produces
-    if (
-        weights.alignment > 0
-        and predicted_latents is not None
-        and encoded is not None
-        and predicted_latents.numel() > 0
-    ):
-        encoded_next = encoded[:, 1:]
-        # print(f"encoded_next:      {encoded_next[:2, :1, :2]}")
-        # print(f"predicted_latents: {predicted_latents[:2, :1, :2]}")
-        
-        if not _SHAPES_PRINTED:
-            print("\n=== SHAPE SANITY CHECK ===")
-            print(f"predicted_latents: {predicted_latents.shape}")
-            print(f"encoded_next:      {encoded_next.shape}")
-            _SHAPES_PRINTED = True
-        
-        # L2 norm at each timestep, sum over time, mean over batch
-        diff_sq = (predicted_latents - encoded_next).pow(2).sum(dim=2)  # (batch, time)
-        components["alignment"] = diff_sq.sqrt().sum(dim=1).mean()
+    reconstructions = outputs["reconstructions"]
+    encoded_all = outputs["encoded"]
+    predicted_latents = outputs["predicted_latents"]
+    predictions = outputs["predictions"]
+    x = batch["x"]
 
-    # ===== Reconstruction Loss: L_Reconst =====
-    # Decode encoded latents and compare with original observations
-    # Ensures ψ ∘ φ forms a proper autoencoder
-    if weights.reconstruction > 0 and reconstructions is not None:
-        if not _SHAPES_PRINTED:
-            print(f"reconstructions:   {reconstructions.shape}")
-            print(f"batch['x']:        {batch['x'].shape}")
-            _SHAPES_PRINTED = True
-        
-        # L2 norm at each timestep, sum over time, mean over batch
-        diff_sq = (reconstructions - batch["x"]).pow(2).sum(dim=2)  # (batch, time)
-        components["reconstruction"] = diff_sq.sqrt().sum(dim=1).mean()
+    # 1. Reconstruction loss
+    if weights.reconstruction > 0:
+        # Compare reconstructed states with original states
+        recon_loss = mean_l2_norm_loss(reconstructions, x)
+        components["reconstruction"] = recon_loss
+        total_loss = total_loss + weights.reconstruction * recon_loss
 
-    # ===== Prediction Loss: L_Pred =====
-    # Decode predicted latents and compare with future observations
-    # Makes decoded rollouts match future states when advancing in latent space
-    if weights.prediction > 0 and predictions is not None and predictions.numel() > 0:
-        target = batch["x"][:, 1: predictions.shape[1] + 1]
-        
-        if not _SHAPES_PRINTED:
-            print(f"predictions:       {predictions.shape}")
-            print(f"target:            {target.shape}")
-            print("========================\n")
-            _SHAPES_PRINTED = True
-        
-        # L2 norm at each timestep, sum over time, mean over batch
-        diff_sq = (predictions - target).pow(2).sum(dim=2)  # (batch, time)
-        components["prediction"] = diff_sq.sqrt().sum(dim=1).mean()
+    # 2. Alignment loss (dynamics in latent space)
+    if weights.alignment > 0 and predicted_latents.numel() > 0:
+        # Compare predicted latents with encoded future states
+        true_next_latents = encoded_all[:, 1:]
+        align_loss = mean_l2_norm_loss(predicted_latents, true_next_latents)
+        components["alignment"] = align_loss
+        total_loss = total_loss + weights.alignment * align_loss
 
-    # ===== Auxiliary Regularization Terms =====
-    if weights.sparsity > 0 and encoded is not None:
-        components["sparsity"] = encoded.abs().mean()
+    # 3. Prediction loss (dynamics in data space)
+    if weights.prediction > 0 and predictions.numel() > 0:
+        # Compare predicted future states with true future states
+        true_next_states = x[:, 1:]
+        pred_loss = mean_l2_norm_loss(predictions, true_next_states)
+        components["prediction"] = pred_loss
+        total_loss = total_loss + weights.prediction * pred_loss
 
+    # 4. Sparsity loss (L1 on latent states)
+    if weights.sparsity > 0:
+        # L1 norm of each latent vector, averaged over batch and time
+        sparsity_loss = torch.linalg.norm(encoded_all, ord=1, dim=-1).mean()
+        components["sparsity"] = sparsity_loss
+        total_loss = total_loss + weights.sparsity * sparsity_loss
+
+    # 5. Frobenius norm loss on Koopman matrix (regularizer)
     if weights.frobenius > 0:
+        koopman_matrix = None
         if hasattr(model, "A"):
-            components["frobenius"] = torch.norm(model.A, p="fro")
+            koopman_matrix = model.A
         elif hasattr(model, "K"):
-            components["frobenius"] = torch.norm(model.K, p="fro")
+            koopman_matrix = model.K
+            
+        if koopman_matrix is not None:
+            frob_loss = torch.norm(koopman_matrix, p="fro")
+            components["frobenius"] = frob_loss
+            total_loss = total_loss + weights.frobenius * frob_loss
 
-    # ===== Aggregate Weighted Loss =====
-    total = (
-        weights.alignment * components.get("alignment", 0.0)
-        + weights.reconstruction * components.get("reconstruction", 0.0)
-        + weights.prediction * components.get("prediction", 0.0)
-        + weights.sparsity * components.get("sparsity", 0.0)
-        + weights.frobenius * components.get("frobenius", 0.0)
-    )
-    return total, components
+    return total_loss, components
