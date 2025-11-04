@@ -16,7 +16,6 @@ dependencies = [
     "tqdm",
     "pytest>=8.4.2",
     "ipykernel>=7.0.1",
-    "ml-collections",
 ]
 
 [project.optional-dependencies]
