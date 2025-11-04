@@ -207,13 +207,16 @@ class LISTA(nn.Module):
 # Koopman Machine Base Class
 # ---------------------------------------------------------------------------
 
-# TODO: my review stopped here on 2025-11-04 01:02, pick up from here.
 class KoopmanMachine(ABC, nn.Module):
     """Abstract base class for Koopman operator learning.
     
-    The Koopman operator is a linear operator that governs the evolution
-    of observables of a dynamical system. This class provides the interface
-    for learning Koopman representations.
+    The Koopman operator is a linear operator that provides a mathematical 
+    framework for representing the dynamics of a nonlinear dynamical system (NLDS) 
+    in terms of an infinite-dimensional linear operator. 
+    Formally, the Koopman operator advances a measurement function forward in time 
+    through the underlying system dynamics.
+    
+    This class provides the interface for learning Koopman representations.
     
     Args:
         cfg: Configuration object
@@ -240,10 +243,10 @@ class KoopmanMachine(ABC, nn.Module):
     
     @abstractmethod
     def decode(self, y: torch.Tensor) -> torch.Tensor:
-        """Decode latent codes to observation space.
+        """Decode latent representations to observation space.
         
         Args:
-            y: Latent codes of shape [..., target_size]
+            y: Latent representations of shape [..., target_size]
             
         Returns:
             Reconstructed observations of shape [..., observation_size]
@@ -252,7 +255,7 @@ class KoopmanMachine(ABC, nn.Module):
     
     @abstractmethod
     def kmatrix(self) -> torch.Tensor:
-        """Get the Koopman matrix.
+        """Extract the learned Koopman matrix from parameters.
         
         Returns:
             Koopman matrix of shape [target_size, target_size]
@@ -261,6 +264,7 @@ class KoopmanMachine(ABC, nn.Module):
     
     def residual(self, x: torch.Tensor, nx: torch.Tensor) -> torch.Tensor:
         """Compute alignment loss between consecutive states in latent space.
+        Determines how linearly aligned x & nx are in the latent space.
         
         Args:
             x: Current states of shape [..., observation_size]
@@ -275,10 +279,10 @@ class KoopmanMachine(ABC, nn.Module):
         return torch.norm(y @ kmat - ny, dim=-1)
     
     def reconstruction(self, x: torch.Tensor) -> torch.Tensor:
-        """Reconstruct observations via encode-decode.
+        """Reconstruction via encode-decode.
         
         Args:
-            x: Observations of shape [..., observation_size]
+            x: shape [..., observation_size]
             
         Returns:
             Reconstructions of shape [..., observation_size]
@@ -359,10 +363,10 @@ class KoopmanMachine(ABC, nn.Module):
             eigvals = torch.linalg.eigvals(kmat)
             max_eigenvalue = torch.max(eigvals.real)
         
-        # Nonzero codes (L0 norm)
+        # Nonzero codes
         with torch.no_grad():
             z = self.encode(x)
-            num_nonzero_codes = (z.abs() > 1e-6).float().sum(dim=-1).mean()
+            num_nonzero_codes = (z != 0).float().sum(dim=-1).mean()
             sparsity_ratio = 1.0 - num_nonzero_codes / self.target_size
         
         # Total weighted loss
@@ -427,8 +431,7 @@ class GenericKM(KoopmanMachine):
         
         # Koopman matrix (learnable)
         self.kmat = nn.Parameter(torch.eye(cfg.MODEL.TARGET_SIZE))
-        
-        # Normalization function
+
         self.norm_fn_name = cfg.MODEL.NORM_FN
     
     def _norm_fn(self, x: torch.Tensor) -> torch.Tensor:
@@ -443,7 +446,7 @@ class GenericKM(KoopmanMachine):
         if self.norm_fn_name == 'id':
             return x
         elif self.norm_fn_name == 'ball':
-            return x / torch.norm(x, dim=-1, keepdim=True).clamp(min=1e-8)
+            return x / torch.norm(x, dim=-1, keepdim=True)
         else:
             raise ValueError(f"Unknown norm function '{self.norm_fn_name}'")
     
@@ -490,7 +493,8 @@ class GenericKM(KoopmanMachine):
         ny = y @ self.kmatrix()
         return self._norm_fn(ny)
 
-
+# TODO: test this class with experiments. Sweep over the sparsity coefficient values.
+# TODO: test this on the Lyapunov environment
 class LISTAKM(KoopmanMachine):
     """Koopman Machine with LISTA sparse encoder.
     
@@ -570,7 +574,6 @@ _MODEL_REGISTRY = {
     "GenericKM": GenericKM,
     "SparseKM": GenericKM,  # Same as GenericKM, configured via sparsity coeff
     "LISTAKM": LISTAKM,
-    "KSAE": LISTAKM,  # Alias for LISTAKM
 }
 
 
@@ -594,4 +597,3 @@ def make_model(cfg: Config, observation_size: int) -> KoopmanMachine:
             f"Available: {list(_MODEL_REGISTRY.keys())}"
         )
     return _MODEL_REGISTRY[model_name](cfg, observation_size)
-
