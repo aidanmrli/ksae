@@ -136,7 +136,6 @@ class VectorWrapper(Wrapper):
 # Utility Functions
 # ---------------------------------------------------------------------------
 
-
 def integrate_euler(
     x: torch.Tensor,
     u: Optional[torch.Tensor],
@@ -155,6 +154,35 @@ def integrate_euler(
         Next state using Euler integration
     """
     return x + dt * dynamics_fn(x, u)
+
+
+def integrate_rk4(
+    x: torch.Tensor,
+    u: Optional[torch.Tensor],
+    dt: float,
+    dynamics_fn: Callable[[torch.Tensor, Optional[torch.Tensor]], torch.Tensor]
+) -> torch.Tensor:
+    """Fourth-order Runge-Kutta (RK4) integration step for ODE.
+    
+    The RK4 method is a higher-order numerical integrator that provides
+    better accuracy than Euler integration by using a weighted average
+    of four slope estimates.
+    
+    Args:
+        x: Current state
+        u: Optional control input
+        dt: Time step
+        dynamics_fn: Function computing state derivatives
+        
+    Returns:
+        Next state using RK4 integration
+    """
+    k1 = dynamics_fn(x, u)
+    k2 = dynamics_fn(x + 0.5 * dt * k1, u)
+    k3 = dynamics_fn(x + 0.5 * dt * k2, u)
+    k4 = dynamics_fn(x + dt * k3, u)
+    
+    return x + (dt / 6.0) * (k1 + 2.0 * k2 + 2.0 * k3 + k4)
 
 
 def generate_trajectory(
@@ -233,7 +261,7 @@ class Pendulum(Env):
             dx2 = -self.g_over_l * torch.sin(x1)
             return torch.stack([dx1, dx2])
 
-        return integrate_euler(state, None, self.dt, dynamics_fn)
+        return integrate_rk4(state, None, self.dt, dynamics_fn)
 
 
 class Duffing(Env):
@@ -271,7 +299,7 @@ class Duffing(Env):
             dx2 = x1 - x1**3
             return torch.stack([dx1, dx2])
 
-        return integrate_euler(state, None, self.dt, dynamics_fn)
+        return integrate_rk4(state, None, self.dt, dynamics_fn)
 
 
 class LotkaVolterra(Env):
@@ -315,7 +343,7 @@ class LotkaVolterra(Env):
             dx2 = self.delta * prey * predator - self.gamma * predator
             return torch.stack([dx1, dx2])
 
-        return integrate_euler(state, None, self.dt, dynamics_fn)
+        return integrate_rk4(state, None, self.dt, dynamics_fn)
 
 
 class Lorenz63(Env):
@@ -359,7 +387,7 @@ class Lorenz63(Env):
             dz = x * y - self.beta * z
             return torch.stack([dx, dy, dz])
 
-        return integrate_euler(state, None, self.dt, dynamics_fn)
+        return integrate_rk4(state, None, self.dt, dynamics_fn)
 
 
 class Parabolic(Env):
@@ -402,7 +430,7 @@ class Parabolic(Env):
             dx2 = self.const_lambda * (x2 - x1**2)
             return torch.stack([dx1, dx2])
 
-        return integrate_euler(state, None, self.dt, dynamics_fn)
+        return integrate_rk4(state, None, self.dt, dynamics_fn)
 
 
 # ---------------------------------------------------------------------------
