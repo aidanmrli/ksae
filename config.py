@@ -401,7 +401,7 @@ def get_config(name: str = "default") -> Config:
     """
     if name == "default":
         return get_default_config()
-    if name not in _CONFIG_REGISTRY:
-        raise ValueError(f"Unknown config name '{name}'. Available: {list(_CONFIG_REGISTRY.keys())}")
-    return _CONFIG_REGISTRY[name]()
+    if name not in _TRAIN_CONFIG_REGISTRY:
+        raise ValueError(f"Unknown config name '{name}'. Available: {list(_TRAIN_CONFIG_REGISTRY.keys())}")
+    return _TRAIN_CONFIG_REGISTRY[name]()
 
