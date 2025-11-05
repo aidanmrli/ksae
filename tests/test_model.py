@@ -476,14 +476,6 @@ class TestModelFactory:
         model = make_model(cfg, obs_size)
         assert isinstance(model, LISTAKM)
     
-    def test_make_model_ksae(self):
-        """Test creating KSAE (alias for LISTAKM) via factory."""
-        cfg = get_config("lista")
-        cfg.MODEL.MODEL_NAME = "KSAE"
-        obs_size = 2
-        model = make_model(cfg, obs_size)
-        assert isinstance(model, LISTAKM)
-    
     def test_make_model_invalid(self):
         """Test factory raises error for invalid model name."""
         cfg = get_config("generic")

@@ -115,7 +115,7 @@ Config
 │   ├── ENCODER: EncoderConfig
 │   │   ├── LAYERS: List[int]
 │   │   ├── ACTIVATION, USE_BIAS, etc.
-│   │   └── LISTA: ListaConfig (for KSAE models)
+│   │   └── LISTA: ListaConfig (for LISTAKM models)
 │   └── DECODER: DecoderConfig
 └── TRAIN: TrainConfig
     ├── NUM_STEPS: int (epochs)
@@ -341,7 +341,7 @@ def get_train_generic_prediction_config() -> Config:
 def get_train_lista_config() -> Config:
     """Configuration for LISTA-based Sparse KM."""
     cfg = Config()
-    cfg.MODEL.MODEL_NAME = "KSAE"
+    cfg.MODEL.MODEL_NAME = "LISTAKM"
     cfg.MODEL.ENCODER.LISTA.LINEAR_ENCODER = True
     cfg.MODEL.ENCODER.LISTA.NUM_LOOPS = 10
     cfg.MODEL.TARGET_SIZE = 1024 * 2
@@ -390,10 +390,10 @@ def get_config(name: str = "default") -> Config:
     Args:
         name: Configuration name. Options:
             - "default": Base configuration
-            - "generic": Standard KoopmanAE
-            - "generic_sparse": Sparse KoopmanAE with L1
+            - "generic": Standard KoopmanMachine
+            - "generic_sparse": Sparse KoopmanMachine with L1
             - "generic_prediction": Prediction-focused
-            - "lista": LISTA-based KSAE
+            - "lista": LISTA-based KoopmanMachine
             - "lista_nonlinear": LISTA with MLP encoder
     
     Returns:

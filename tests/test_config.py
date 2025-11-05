@@ -55,7 +55,7 @@ def test_get_named_configs():
     
     # Test LISTA config
     cfg_lista = get_train_lista_config()
-    assert cfg_lista.MODEL.MODEL_NAME == "KSAE"
+    assert cfg_lista.MODEL.MODEL_NAME == "LISTAKM"
     assert cfg_lista.MODEL.ENCODER.LISTA.NUM_LOOPS == 10
     assert cfg_lista.MODEL.TARGET_SIZE == 1024 * 2
 
@@ -69,7 +69,7 @@ def test_config_registry():
     assert cfg_generic.MODEL.MODEL_NAME == "GenericKM"
     
     cfg_lista = get_config("lista")
-    assert cfg_lista.MODEL.MODEL_NAME == "KSAE"
+    assert cfg_lista.MODEL.MODEL_NAME == "LISTAKM"
     
     with pytest.raises(ValueError):
         get_config("nonexistent")
