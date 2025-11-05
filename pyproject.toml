@@ -30,4 +30,6 @@ py-modules = [
     "train",
     "eval",
     "utils",
+    "config",
+    "model",
 ]
