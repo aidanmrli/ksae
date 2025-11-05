@@ -509,10 +509,12 @@ class LISTAKM(KoopmanMachine):
     def __init__(self, cfg: Config, observation_size: int):
         super().__init__(cfg, observation_size)
         
-        # Initialize dictionary (decoder weights)
-        Wd_init = torch.randn(cfg.MODEL.TARGET_SIZE, observation_size) * 0.01
+        # Initialize dictionary
+        # For LISTA, W_d is expected with shape [xdim, zdim].
+        # The decoder dictionary parameter is stored as [zdim, xdim] for y @ W_d.
+        Wd_init = torch.randn(observation_size, cfg.MODEL.TARGET_SIZE) * 0.01  # [xdim, zdim]
         self.register_buffer('dict_init', Wd_init.clone())
-        self.dict = nn.Parameter(Wd_init)
+        self.dict = nn.Parameter(Wd_init.T)  # [zdim, xdim]
         
         # LISTA encoder
         self.lista = LISTA(cfg, observation_size, Wd_init)
