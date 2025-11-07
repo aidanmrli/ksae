@@ -364,6 +364,14 @@ class KoopmanMachine(ABC, nn.Module):
         Returns:
             Latent trajectory of shape [num_steps+1, batch_size, target_size]
         """
+        # Print integration method on first call
+        if not hasattr(self, '_printed_ode_method'):
+            if HAS_TORCHDIFFEQ:
+                print(f"Using torchdiffeq with method '{method}' for ODE integration")
+            else:
+                print("Using manual RK4 for ODE integration (torchdiffeq not available)")
+            self._printed_ode_method = True
+        
         if HAS_TORCHDIFFEQ:
             # Use torchdiffeq for adaptive integration
             z_traj = odeint(
