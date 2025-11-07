@@ -212,7 +212,8 @@ class ModelConfig:
     RES_COEFF: float = 1.0  # alignment loss weight
     RECONST_COEFF: float = 0.02  # reconstruction loss weight
     PRED_COEFF: float = 0.0  # prediction loss weight
-    SPARSITY_COEFF: float = 1.0  # sparsity loss weight (L1 regularization)
+    SPARSITY_COEFF: float = 1e-3  # sparsity loss weight (L1 regularization)
+    DECODER_REG_COEFF: float = 0.01  # decoder column-norm regularization weight
     
     # Sub-configs
     ENCODER: EncoderConfig = field(default_factory=EncoderConfig)
@@ -225,9 +226,13 @@ class TrainConfig:
     NUM_STEPS: int = 2_000  # total training steps (epochs)
     BATCH_SIZE: int = 256
     DATA_SIZE: int = 256 * 8  # total dataset size
-    LR: float = 1e-4  # main learning rate
+    LR: float = 1e-4  # main learning rate (encoder/decoder)
     WEIGHT_DECAY: float = 1e-4  # weight decay for AdamW optimizer
     K_MATRIX_LR: float = 1e-5  # learning rate for Koopman matrix parameters
+    
+    # Sequence training parameters
+    USE_SEQUENCE_LOSS: bool = True  # use sequence-based loss with ODE integration
+    SEQUENCE_LENGTH: int = 10  # number of forward steps in each training sequence (T)
 
 @dataclass
 class Config:

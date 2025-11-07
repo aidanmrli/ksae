@@ -15,6 +15,12 @@ import torch
 import torch.nn as nn
 from config import Config
 
+try:
+    from torchdiffeq import odeint
+    HAS_TORCHDIFFEQ = True
+except ImportError:
+    HAS_TORCHDIFFEQ = False
+
 
 # ---------------------------------------------------------------------------
 # Utility Functions
@@ -228,6 +234,7 @@ class KoopmanMachine(ABC, nn.Module):
         self.cfg = cfg
         self.observation_size = observation_size
         self.target_size = cfg.MODEL.TARGET_SIZE
+        self.dt = None  # Will be set from environment config if needed
     
     @abstractmethod
     def encode(self, x: torch.Tensor) -> torch.Tensor:
@@ -327,12 +334,156 @@ class KoopmanMachine(ABC, nn.Module):
         nx = self.decode(ny)
         return nx
     
+    def koopman_ode_func(self, t: torch.Tensor, z: torch.Tensor) -> torch.Tensor:
+        """ODE function for continuous-time Koopman dynamics: dz/dt = K @ z.
+        
+        Args:
+            t: Time (scalar, unused but required by odeint)
+            z: Latent state of shape [..., target_size]
+            
+        Returns:
+            Time derivative dz/dt of shape [..., target_size]
+        """
+        kmat = self.kmatrix()
+        # For linear dynamics: dz/dt = K @ z
+        return z @ kmat
+    
+    def integrate_latent_ode(
+        self, 
+        z0: torch.Tensor, 
+        t_span: torch.Tensor,
+        method: str = 'dopri5'
+    ) -> torch.Tensor:
+        """Integrate Koopman dynamics from z0 over time points in t_span.
+        
+        Args:
+            z0: Initial latent state of shape [batch_size, target_size]
+            t_span: Time points of shape [num_steps+1] starting from 0
+            method: Integration method ('dopri5' for adaptive RK, 'rk4' for fixed-step RK4)
+            
+        Returns:
+            Latent trajectory of shape [num_steps+1, batch_size, target_size]
+        """
+        if HAS_TORCHDIFFEQ:
+            # Use torchdiffeq for adaptive integration
+            z_traj = odeint(
+                self.koopman_ode_func,
+                z0,
+                t_span,
+                method=method,
+                rtol=1e-5,
+                atol=1e-7,
+            )
+            return z_traj
+        else:
+            # Fallback: fixed-step RK4 (more accurate than Euler)
+            return self._integrate_rk4_fallback(z0, t_span)
+    
+    def _integrate_rk4_fallback(
+        self, 
+        z0: torch.Tensor, 
+        t_span: torch.Tensor
+    ) -> torch.Tensor:
+        """Fallback RK4 integration when torchdiffeq is not available.
+        
+        Implements classic 4th-order Runge-Kutta method.
+        
+        Args:
+            z0: Initial latent state [batch_size, target_size]
+            t_span: Time points [num_steps+1]
+            
+        Returns:
+            Latent trajectory [num_steps+1, batch_size, target_size]
+        """
+        z_list = [z0]
+        z = z0
+        for i in range(len(t_span) - 1):
+            t = t_span[i]
+            dt = t_span[i+1] - t_span[i]
+            
+            # RK4 stages
+            k1 = self.koopman_ode_func(t, z)
+            k2 = self.koopman_ode_func(t + 0.5 * dt, z + 0.5 * dt * k1)
+            k3 = self.koopman_ode_func(t + 0.5 * dt, z + 0.5 * dt * k2)
+            k4 = self.koopman_ode_func(t + dt, z + dt * k3)
+            
+            # Update state
+            z = z + (dt / 6.0) * (k1 + 2.0 * k2 + 2.0 * k3 + k4)
+            z_list.append(z)
+        
+        return torch.stack(z_list, dim=0)
+    
+    def rollout_sequence_ode(
+        self,
+        x0: torch.Tensor,
+        num_steps: int,
+        dt: float,
+    ) -> torch.Tensor:
+        """Rollout a sequence using ODE integration of Koopman dynamics.
+        
+        Args:
+            x0: Initial observations of shape [batch_size, observation_size]
+            num_steps: Number of steps to roll out
+            dt: Time step between observations
+            
+        Returns:
+            Predicted trajectory of shape [num_steps+1, batch_size, observation_size]
+            Includes x0 at index 0
+        """
+        # Encode initial state
+        z0 = self.encode(x0)  # [batch_size, target_size]
+        
+        # Create time span
+        t_span = torch.arange(num_steps + 1, dtype=torch.float32, device=x0.device) * dt
+        
+        # Integrate latent dynamics
+        z_traj = self.integrate_latent_ode(z0, t_span)  # [num_steps+1, batch_size, target_size]
+        
+        # Decode all latent states
+        # Need to reshape for decoding: [num_steps+1 * batch_size, target_size]
+        num_times, batch_size, target_size = z_traj.shape
+        z_flat = z_traj.reshape(num_times * batch_size, target_size)
+        x_flat = self.decode(z_flat)  # [num_times * batch_size, observation_size]
+        x_traj = x_flat.reshape(num_times, batch_size, self.observation_size)
+        
+        return x_traj
+    
+    def decoder_column_norm_regularization(self) -> torch.Tensor:
+        """Compute decoder column normalization penalty.
+        
+        For decoders with weight matrices, penalizes deviation from unit-norm columns.
+        
+        Returns:
+            Scalar regularization loss
+        """
+        reg_loss = 0.0
+        count = 0
+        
+        # Find decoder parameters (works for both GenericKM and LISTAKM)
+        if hasattr(self, 'decoder') and hasattr(self.decoder, 'network'):
+            # GenericKM case: decoder is MLPCoder with sequential network
+            for module in self.decoder.network:
+                if isinstance(module, nn.Linear):
+                    # Weight shape: [out_features, in_features]
+                    # We want column norms (over out_features dimension)
+                    col_norms = torch.norm(module.weight, dim=0)  # [in_features]
+                    reg_loss += torch.mean((col_norms - 1.0) ** 2)
+                    count += 1
+        elif hasattr(self, 'dict'):
+            # LISTAKM case: decoder dictionary with shape [zdim, xdim]
+            # Columns are along dimension 1
+            col_norms = torch.norm(self.dict, dim=1)  # [zdim]
+            reg_loss += torch.mean((col_norms - 1.0) ** 2)
+            count += 1
+        
+        return reg_loss / max(count, 1)
+    
     def loss(
         self,
         x: torch.Tensor,
         nx: torch.Tensor
     ) -> Tuple[torch.Tensor, Dict[str, torch.Tensor]]:
-        """Compute total loss and metrics.
+        """Compute total loss and metrics (single-step version, for backward compatibility).
         
         Args:
             x: Current states of shape [batch_size, observation_size]
@@ -358,6 +509,9 @@ class KoopmanMachine(ABC, nn.Module):
         sparsity_loss += self.sparsity_loss(nx)
         sparsity_loss *= 0.5
         
+        # Decoder regularization
+        decoder_reg = self.decoder_column_norm_regularization()
+        
         # Koopman matrix eigenvalues
         with torch.no_grad():
             eigvals = torch.linalg.eigvals(kmat)
@@ -374,7 +528,8 @@ class KoopmanMachine(ABC, nn.Module):
             self.cfg.MODEL.RES_COEFF * residual_loss +
             self.cfg.MODEL.RECONST_COEFF * reconst_loss +
             self.cfg.MODEL.PRED_COEFF * prediction_loss +
-            self.cfg.MODEL.SPARSITY_COEFF * sparsity_loss
+            self.cfg.MODEL.SPARSITY_COEFF * sparsity_loss +
+            self.cfg.MODEL.DECODER_REG_COEFF * decoder_reg
         )
         
         metrics = {
@@ -383,6 +538,118 @@ class KoopmanMachine(ABC, nn.Module):
             'reconst_loss': reconst_loss.item(),
             'prediction_loss': prediction_loss.item(),
             'sparsity_loss': sparsity_loss.item(),
+            'decoder_reg': decoder_reg.item(),
+            'A_max_eigenvalue': max_eigenvalue.item(),
+            'sparsity_ratio': sparsity_ratio.item(),
+        }
+        
+        return total_loss, metrics
+    
+    def loss_sequence(
+        self,
+        x_seq: torch.Tensor,
+        dt: float,
+    ) -> Tuple[torch.Tensor, Dict[str, torch.Tensor]]:
+        """Compute sequence-based loss using ODE integration.
+        
+        This implements the continuous-time training scheme:
+        1. Encode all states in sequence: z_i = φ(x_i)
+        2. Integrate dz/dt = Kz from z_0 to get predicted latents ẑ_i
+        3. Decode both: x̃_i = ψ(z_i), x̂_i = ψ(ẑ_i)
+        4. Compute alignment, reconstruction, and prediction losses
+        
+        Args:
+            x_seq: Sequence of states with shape [batch_size, seq_len, observation_size]
+                   Includes x_t, x_{t+1}, ..., x_{t+T}
+            dt: Time step between consecutive observations
+            
+        Returns:
+            Tuple of (total_loss, metrics_dict)
+        """
+        batch_size, seq_len, obs_size = x_seq.shape
+        
+        # 1. Encode each state in the sequence
+        # Flatten for encoding: [batch_size * seq_len, obs_size]
+        x_flat = x_seq.reshape(batch_size * seq_len, obs_size)
+        z_flat = self.encode(x_flat)  # [batch_size * seq_len, target_size]
+        z_seq = z_flat.reshape(batch_size, seq_len, self.target_size)
+        
+        # 2. Integrate Koopman dynamics from initial state
+        x0 = x_seq[:, 0, :]  # [batch_size, obs_size]
+        z0 = z_seq[:, 0, :]  # [batch_size, target_size]
+        
+        # Create time span for integration
+        t_span = torch.arange(seq_len, dtype=torch.float32, device=x_seq.device) * dt
+        
+        # Integrate: z_hat has shape [seq_len, batch_size, target_size]
+        z_hat_traj = self.integrate_latent_ode(z0, t_span)
+        
+        # Transpose to [batch_size, seq_len, target_size]
+        z_hat_seq = z_hat_traj.transpose(0, 1)
+        
+        # 3. Decode both encoded and advanced latents
+        # Reconstruction from encoded latents
+        x_tilde = self.decode(z_flat).reshape(batch_size, seq_len, obs_size)
+        
+        # Prediction from ODE-advanced latents
+        z_hat_flat = z_hat_seq.reshape(batch_size * seq_len, self.target_size)
+        x_hat_flat = self.decode(z_hat_flat)
+        x_hat_seq = x_hat_flat.reshape(batch_size, seq_len, obs_size)
+        
+        # 4. Compute losses
+        
+        # Alignment loss: sum over sequence (excluding initial state)
+        # |ẑ_{t+i} - z_{t+i}|^2 for i = 1..T
+        alignment_loss = torch.norm(
+            z_hat_seq[:, 1:, :] - z_seq[:, 1:, :], 
+            dim=-1
+        ).pow(2).sum(dim=1).mean()
+        
+        # Reconstruction loss: sum over entire sequence including initial
+        # |x_{t+i} - x̃_{t+i}|^2 for i = 0..T
+        reconst_loss = torch.norm(
+            x_seq - x_tilde,
+            dim=-1
+        ).pow(2).sum(dim=1).mean()
+        
+        # Prediction loss: sum over sequence (excluding initial state)
+        # |x_{t+i} - x̂_{t+i}|^2 for i = 1..T
+        prediction_loss = torch.norm(
+            x_seq[:, 1:, :] - x_hat_seq[:, 1:, :],
+            dim=-1
+        ).pow(2).sum(dim=1).mean()
+        
+        # Sparsity loss: L1 on latents averaged over sequence
+        sparsity_loss = torch.norm(z_seq, p=1, dim=-1).mean()
+        
+        # Decoder regularization
+        decoder_reg = self.decoder_column_norm_regularization()
+        
+        # Metrics for monitoring
+        with torch.no_grad():
+            kmat = self.kmatrix()
+            eigvals = torch.linalg.eigvals(kmat)
+            max_eigenvalue = torch.max(eigvals.real)
+            
+            num_nonzero_codes = (z_seq != 0).float().sum(dim=-1).mean()
+            sparsity_ratio = 1.0 - num_nonzero_codes / self.target_size
+        
+        # Total weighted loss
+        total_loss = (
+            self.cfg.MODEL.RES_COEFF * alignment_loss +
+            self.cfg.MODEL.RECONST_COEFF * reconst_loss +
+            self.cfg.MODEL.PRED_COEFF * prediction_loss +
+            self.cfg.MODEL.SPARSITY_COEFF * sparsity_loss +
+            self.cfg.MODEL.DECODER_REG_COEFF * decoder_reg
+        )
+        
+        metrics = {
+            'loss': total_loss.item(),
+            'alignment_loss': alignment_loss.item(),
+            'reconst_loss': reconst_loss.item(),
+            'prediction_loss': prediction_loss.item(),
+            'sparsity_loss': sparsity_loss.item(),
+            'decoder_reg': decoder_reg.item(),
             'A_max_eigenvalue': max_eigenvalue.item(),
             'sparsity_ratio': sparsity_ratio.item(),
         }

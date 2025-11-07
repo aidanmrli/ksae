@@ -94,14 +94,19 @@ def train_step(
     optimizer: torch.optim.Optimizer,
     x: torch.Tensor,
     nx: torch.Tensor,
+    cfg: Config,
+    dt: float,
 ) -> Dict[str, float]:
     """Perform one training step.
     
     Args:
         model: Koopman machine model
         optimizer: PyTorch optimizer
-        x: Current states [batch_size, observation_size]
-        nx: Next states [batch_size, observation_size]
+        x: Current states [batch_size, observation_size] OR
+           sequence [batch_size, seq_len, observation_size] if USE_SEQUENCE_LOSS=True
+        nx: Next states [batch_size, observation_size] (unused if USE_SEQUENCE_LOSS=True)
+        cfg: Configuration object
+        dt: Time step for ODE integration
         
     Returns:
         Dictionary of metrics
@@ -110,7 +115,12 @@ def train_step(
     optimizer.zero_grad()
     
     # Compute loss
-    loss, metrics = model.loss(x, nx)
+    if cfg.TRAIN.USE_SEQUENCE_LOSS:
+        # x is a sequence: [batch_size, seq_len, observation_size]
+        loss, metrics = model.loss_sequence(x, dt)
+    else:
+        # Standard single-step loss
+        loss, metrics = model.loss(x, nx)
     
     # Backward pass
     loss.backward()
@@ -214,8 +224,24 @@ def train(
     env = make_env(cfg)
     env = VectorWrapper(env, cfg.TRAIN.BATCH_SIZE)
     
+    # Get dt from environment config for ODE integration
+    env_name = cfg.ENV.ENV_NAME.lower()
+    if env_name == 'duffing':
+        dt = cfg.ENV.DUFFING.DT
+    elif env_name == 'pendulum':
+        dt = cfg.ENV.PENDULUM.DT
+    elif env_name == 'lotka_volterra':
+        dt = cfg.ENV.LOTKA_VOLTERRA.DT
+    elif env_name == 'lorenz63':
+        dt = cfg.ENV.LORENZ63.DT
+    elif env_name == 'parabolic':
+        dt = cfg.ENV.PARABOLIC.DT
+    else:
+        dt = 0.01  # default fallback
+    
     model = make_model(cfg, env.observation_size)
     model = model.to(device)
+    model.dt = dt  # Store dt in model for use in ODE integration
     
     optimizer = build_optimizer(model, cfg)
     
@@ -247,26 +273,48 @@ def train(
     for step in range(start_step, cfg.TRAIN.NUM_STEPS):
         # Generate batch
         rng = rngs[step % num_batches]
-        x = env.reset(rng)
-        nx = env.step(x)
         
-        x = x.to(device)
-        nx = nx.to(device)
-        
-        metrics = train_step(model, optimizer, x, nx)
+        if cfg.TRAIN.USE_SEQUENCE_LOSS:
+            # Generate sequence windows
+            x_seq = env.generate_sequence_batch(rng, window_length=cfg.TRAIN.SEQUENCE_LENGTH)
+            # x_seq has shape [batch_size, seq_len+1, obs_size]
+            x_seq = x_seq.to(device)
+            nx = None  # Not used for sequence loss
+            metrics = train_step(model, optimizer, x_seq, nx, cfg, dt)
+        else:
+            # Generate single transitions (backward compatibility)
+            x = env.reset(rng)
+            nx = env.step(x)
+            x = x.to(device)
+            nx = nx.to(device)
+            metrics = train_step(model, optimizer, x, nx, cfg, dt)
         
         logger.log_dict(metrics, step, prefix='train')
         
         if step % 100 == 0:
-            print(f"Step {step}/{cfg.TRAIN.NUM_STEPS} | "
-                  f"Loss: {metrics['loss']:.4f} | "
-                  f"Res: {metrics['residual_loss']:.4f} | "
-                  f"Recon: {metrics['reconst_loss']:.4f} | "
-                  f"Sparsity: {metrics['sparsity_ratio']:.3f}")
+            if cfg.TRAIN.USE_SEQUENCE_LOSS:
+                print(f"Step {step}/{cfg.TRAIN.NUM_STEPS} | "
+                      f"Loss: {metrics['loss']:.4f} | "
+                      f"Align: {metrics['alignment_loss']:.4f} | "
+                      f"Recon: {metrics['reconst_loss']:.4f} | "
+                      f"Pred: {metrics['prediction_loss']:.4f} | "
+                      f"Sparsity: {metrics['sparsity_ratio']:.3f}")
+            else:
+                print(f"Step {step}/{cfg.TRAIN.NUM_STEPS} | "
+                      f"Loss: {metrics['loss']:.4f} | "
+                      f"Res: {metrics['residual_loss']:.4f} | "
+                      f"Recon: {metrics['reconst_loss']:.4f} | "
+                      f"Sparsity: {metrics['sparsity_ratio']:.3f}")
         
         # Periodic evaluation
         if step % 500 == 0 or step == cfg.TRAIN.NUM_STEPS - 1:
-            eval_results = evaluate(model, x[:4], lambda s: env.step(s), num_steps=200)
+            # Get initial states for evaluation
+            if cfg.TRAIN.USE_SEQUENCE_LOSS:
+                eval_x = x_seq[:4, 0, :]  # First timestep of first 4 sequences
+            else:
+                eval_x = x[:4]
+            
+            eval_results = evaluate(model, eval_x, lambda s: env.step(s), num_steps=200)
             logger.log_scalar('eval/mean_error', eval_results['mean_error'], step)
             logger.log_scalar('eval/final_error', eval_results['final_error'], step)
             

@@ -66,6 +66,26 @@ class TestBaseClasses(unittest.TestCase):
         # States should change after stepping
         self.assertFalse(torch.allclose(batch_states, next_states))
 
+    def test_vector_wrapper_diverse_initial_states(self):
+        """Test VectorWrapper produces different initial states for each environment."""
+        env = Duffing(self.cfg)
+        batch_size = 16
+        vec_env = VectorWrapper(env, batch_size)
+
+        rng = torch.Generator()
+        rng.manual_seed(42)
+        batch_states = vec_env.reset(rng)
+
+        # Each environment should have a different initial state
+        # Check that not all states are identical
+        unique_states = torch.unique(batch_states, dim=0)
+        self.assertGreater(len(unique_states), 1, 
+                          "All initial states are identical - RNG splitting failed")
+        
+        # Most states should be unique (with high probability for random initialization)
+        self.assertGreater(len(unique_states), batch_size * 0.8,
+                          f"Expected diverse states, got {len(unique_states)}/{batch_size} unique")
+
 
 class TestIntegration(unittest.TestCase):
     """Test numerical integration functions."""

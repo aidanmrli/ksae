@@ -136,6 +136,36 @@ class VectorWrapper(Wrapper):
             return torch.vmap(lambda s: self.env.step(s, None))(state)
         else:
             return torch.vmap(lambda s, a: self.env.step(s, a))(state, action)
+    
+    def generate_sequence_batch(
+        self, 
+        rng: Optional[torch.Generator] = None,
+        window_length: int = 10,
+    ) -> torch.Tensor:
+        """Generate a batch of sequence windows.
+        
+        Args:
+            rng: Random number generator
+            window_length: Length of sequence (T steps after initial state)
+            
+        Returns:
+            Batch of sequences with shape [batch_size, window_length+1, state_dim]
+            Each sequence contains [x_t, x_{t+1}, ..., x_{t+T}]
+        """
+        init_states = self.reset(rng)  # [batch_size, state_dim]
+        
+        # Generate sequences for each initial state in the batch
+        sequences = []
+        for i in range(self.batch_size):
+            seq = generate_sequence_window(
+                lambda s: self.env.step(s, None),
+                init_states[i],
+                window_length
+            )
+            sequences.append(seq)
+        
+        # Stack and transpose to [batch_size, window_length+1, state_dim]
+        return torch.stack(sequences, dim=0)
 
 
 # ---------------------------------------------------------------------------
@@ -225,6 +255,30 @@ def generate_trajectory(
             state = env_step(state, action)
             states.append(state)
         return torch.stack(states, dim=0)
+
+
+def generate_sequence_window(
+    env_step: Callable[[torch.Tensor, Optional[torch.Tensor]], torch.Tensor],
+    init_state: torch.Tensor,
+    window_length: int,
+) -> torch.Tensor:
+    """Generate a sequence window including the initial state.
+    
+    Args:
+        env_step: Function that takes state (and optionally action) and returns next state
+        init_state: Initial state tensor
+        window_length: Length of sequence window (T+1 total states including initial)
+        
+    Returns:
+        Sequence tensor with shape [window_length+1, state_dim] or [window_length+1, batch_size, state_dim]
+        This includes x_t, x_{t+1}, ..., x_{t+T}
+    """
+    states = [init_state]
+    state = init_state
+    for _ in range(window_length):
+        state = env_step(state)
+        states.append(state)
+    return torch.stack(states, dim=0)
 
 
 # ---------------------------------------------------------------------------
