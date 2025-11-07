@@ -225,8 +225,9 @@ class TrainConfig:
     NUM_STEPS: int = 2_000  # total training steps (epochs)
     BATCH_SIZE: int = 256
     DATA_SIZE: int = 256 * 8  # total dataset size
-    LR: float = 1e-3  # main learning rate
+    LR: float = 1e-4  # main learning rate
     WEIGHT_DECAY: float = 1e-4  # weight decay for AdamW optimizer
+    K_MATRIX_LR: float = 1e-5  # learning rate for Koopman matrix parameters
 
 @dataclass
 class Config:
