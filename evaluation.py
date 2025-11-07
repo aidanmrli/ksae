@@ -382,6 +382,7 @@ class EvaluationSettings:
         # "lotka_volterra",
         # "lorenz63",
         # "parabolic",
+        "lyapunov",
     )
     horizons: Sequence[int] = (100, 1000)
     periodic_reencode_periods: Sequence[int] = (10, 25, 50, 100)
