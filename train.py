@@ -20,17 +20,25 @@ from datetime import datetime
 from pathlib import Path
 from typing import Optional, Dict, Any, List
 
+print("Loading torch...")
 import torch
 import torch.nn as nn
+print("Torch loaded.")
 
+print("Loading config...")
 from config import Config, get_config
+print("Config loaded.")
+
+print("Loading data...")
 from data import make_env, VectorWrapper, generate_trajectory
+print("Data loaded.")
+
+print("Loading model...")
 from model import make_model
-from evaluation import (
-    EvaluationSettings,
-    evaluate_model,
-    rollout_every_step_reencode,
-)
+print("Model loaded.")
+
+# Lazy import evaluation - only load when needed
+print("All core imports loaded.")
 
 
 class MetricsLogger:
@@ -169,6 +177,9 @@ def evaluate(
     num_steps: int = 50,
 ) -> Dict[str, Any]:
     """Quick evaluation helper used during training and unit tests."""
+    
+    # Lazy import to avoid loading evaluation module at startup
+    from evaluation import rollout_every_step_reencode
 
     model.eval()
     device = next(model.parameters()).device
@@ -207,6 +218,8 @@ def train(
     Returns:
         Trained model
     """
+    print("Initializing training...")
+    
     # Setup logging directory and save config
     if log_dir is None:
         log_dir = './runs/kae'
@@ -217,10 +230,12 @@ def train(
     
     logger = MetricsLogger(run_dir)
     
+    print("Setting random seed...")
     torch.manual_seed(cfg.SEED)
     if torch.cuda.is_available():
         torch.cuda.manual_seed(cfg.SEED)
     
+    print("Creating environment...")
     env = make_env(cfg)
     env = VectorWrapper(env, cfg.TRAIN.BATCH_SIZE)
     
@@ -239,10 +254,12 @@ def train(
     else:
         dt = 0.01  # default fallback
     
+    print("Creating model...")
     model = make_model(cfg, env.observation_size)
     model = model.to(device)
     model.dt = dt  # Store dt in model for use in ODE integration
     
+    print("Building optimizer...")
     optimizer = build_optimizer(model, cfg)
     
     start_step = 0
@@ -348,7 +365,9 @@ def train(
 
     print("-" * 80)
     print("Running standardized evaluation suite...")
-
+    print("Loading evaluation module...")
+    from evaluation import EvaluationSettings, evaluate_model
+    
     eval_dir = run_dir / "evaluation"
     eval_settings = EvaluationSettings()
     eval_results = evaluate_model(
@@ -392,6 +411,7 @@ def train(
 
 def main():
     """Command-line interface for training."""
+    print("Starting train.py...")
     parser = argparse.ArgumentParser(description='Train Koopman Autoencoder')
     
     # Configuration
