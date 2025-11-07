@@ -45,6 +45,8 @@ python train.py \
   --num_steps 5000 \
   --batch_size 256 \
   --target_size 64 \
+  --reconst_coeff 0.02 \
+  --pred_coeff 1.0 \
   --sparsity_coeff 0.001 \
   --pairwise \
   --seed 0 \
@@ -53,10 +55,12 @@ python train.py \
 python train.py \
   --config lista \
   --env lyapunov \
-  --num_steps 4000 \
+  --num_steps 5000 \
   --batch_size 256 \
-  --target_size 128 \
-  --sparsity_coeff 0.01 \
+  --target_size 64 \
+  --reconst_coeff 0.02 \
+  --pred_coeff 1.0 \
+  --sparsity_coeff 0.001 \
   --pairwise \
   --seed 0 \
   --device cuda
