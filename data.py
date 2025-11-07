@@ -100,20 +100,26 @@ class VectorWrapper(Wrapper):
         self.batch_size = batch_size
 
     def reset(self, rng: Optional[torch.Generator] = None) -> torch.Tensor:
-        """Reset multiple environments in parallel.
+        """Reset multiple environments in parallel with independent random seeds.
+        
+        Mimics JAX's jax.random.split behavior by creating independent generators
+        for each environment in the batch to ensure diverse initial states.
         
         Args:
-            rng: Random number generator
+            rng: Random number generator (if None, creates a new one)
             
         Returns:
             Batch of initial states with shape [batch_size, state_dim]
         """
         if rng is None:
             rng = torch.Generator()
-        # Generate batch of initial states
+        
+        # Create independent generators for each environment (like jax.random.split)
+        base_seed = rng.initial_seed()
         states = []
-        for _ in range(self.batch_size):
-            states.append(self.env.reset(rng))
+        for i in range(self.batch_size):
+            env_rng = torch.Generator().manual_seed(base_seed + i)
+            states.append(self.env.reset(env_rng))
         return torch.stack(states, dim=0)
 
     def step(self, state: torch.Tensor, action: Optional[torch.Tensor] = None) -> torch.Tensor:
