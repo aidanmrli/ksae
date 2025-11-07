@@ -46,12 +46,16 @@ class MetricsLogger:
     
     Logs metrics to JSON files for later analysis or plotting.
     Can easily be replaced with wandb later.
+    Uses buffered writes to reduce I/O overhead.
     """
     
-    def __init__(self, log_dir: Path):
+    def __init__(self, log_dir: Path, flush_interval: int = 100):
         self.log_dir = log_dir
         self.metrics_file = log_dir / 'metrics_history.jsonl'
         self.metrics_history: List[Dict] = []
+        self.buffer: List[str] = []
+        self.flush_interval = flush_interval
+        self.step_count = 0
     
     def log_scalar(self, name: str, value: float, step: int):
         """Log a scalar metric."""
@@ -60,11 +64,21 @@ class MetricsLogger:
             'name': name,
             'value': value,
         }
-        # Append to JSONL file (one JSON object per line)
-        with open(self.metrics_file, 'a') as f:
-            f.write(json.dumps(entry) + '\n')
-        
+        # Buffer writes to reduce I/O overhead
+        self.buffer.append(json.dumps(entry) + '\n')
         self.metrics_history.append(entry)
+        self.step_count += 1
+        
+        # Flush buffer periodically
+        if len(self.buffer) >= self.flush_interval:
+            self.flush()
+    
+    def flush(self):
+        """Flush buffered metrics to disk."""
+        if self.buffer:
+            with open(self.metrics_file, 'a') as f:
+                f.writelines(self.buffer)
+            self.buffer.clear()
     
     def log_dict(self, metrics: Dict[str, float], step: int, prefix: str = ''):
         """Log a dictionary of metrics."""
@@ -73,7 +87,10 @@ class MetricsLogger:
             self.log_scalar(name, value, step)
     
     def close(self):
-        """Save final summary."""
+        """Save final summary and flush any remaining buffered writes."""
+        # Flush any remaining buffered metrics
+        self.flush()
+        
         summary_file = self.log_dir / 'metrics_summary.json'
         
         # Compute summary statistics
@@ -205,7 +222,7 @@ def train(
     cfg: Config,
     log_dir: Optional[str] = None,
     checkpoint_path: Optional[str] = None,
-    device: str = 'cpu',
+    device: str = 'cuda',
 ) -> nn.Module:
     """Main training function.
     
@@ -285,7 +302,7 @@ def train(
     print(f"Log directory: {run_dir}")
     print("-" * 80)
     
-    best_loss = float('inf')
+    best_eval_final_error = float('inf')
     
     for step in range(start_step, cfg.TRAIN.NUM_STEPS):
         # Generate batch
@@ -323,7 +340,7 @@ def train(
                       f"Recon: {metrics['reconst_loss']:.4f} | "
                       f"Sparsity: {metrics['sparsity_ratio']:.3f}")
         
-        # Periodic evaluation
+        # Periodic evaluation and checkpoint saving
         if step % 500 == 0 or step == cfg.TRAIN.NUM_STEPS - 1:
             # Get initial states for evaluation
             if cfg.TRAIN.USE_SEQUENCE_LOSS:
@@ -337,9 +354,8 @@ def train(
             
             print(f"  Eval | Mean error: {eval_results['mean_error']:.4f} | "
                   f"Final error: {eval_results['final_error']:.4f}")
-        
-        # Save checkpoint
-        if step % 1000 == 0 or step == cfg.TRAIN.NUM_STEPS - 1:
+            
+            # Save checkpoint
             checkpoint_dict = {
                 'step': step,
                 'model_state_dict': model.state_dict(),
@@ -351,11 +367,11 @@ def train(
             # Save latest checkpoint
             torch.save(checkpoint_dict, run_dir / 'last.pt')
             
-            # Save best checkpoint
-            if metrics['loss'] < best_loss:
-                best_loss = metrics['loss']
+            # Save best checkpoint if eval error improved
+            if eval_results['final_error'] < best_eval_final_error:
+                best_eval_final_error = eval_results['final_error']
                 torch.save(checkpoint_dict, run_dir / 'checkpoint.pt')
-                print(f"  Saved best checkpoint (loss: {best_loss:.4f})")
+                print(f"  Saved best checkpoint (final eval error: {best_eval_final_error:.4f})")
     
     # Save final metrics and close logger
     with open(run_dir / 'final_metrics.json', 'w') as f:
@@ -440,6 +456,12 @@ def main():
     parser.add_argument('--sparsity_coeff', type=float, default=None,
                         help='Sparsity loss weight (overrides config default)')
     
+    # Training mode
+    parser.add_argument('--pairwise', action='store_true',
+                        help='Use pairwise (single-step) training instead of sequence training')
+    parser.add_argument('--sequence_length', type=int, default=10,
+                        help='Sequence length for sequence training (overrides config default)')
+    
     # Logging
     parser.add_argument('--log_dir', type=str, default='./runs/kae',
                         help='Directory for logs and checkpoints')
@@ -447,7 +469,7 @@ def main():
                         help='Path to checkpoint to resume from')
     
     # Device
-    parser.add_argument('--device', type=str, default='cpu',
+    parser.add_argument('--device', type=str, default='cuda',
                         choices=['cpu', 'cuda', 'mps'],
                         help='Device to train on')
     
@@ -467,6 +489,13 @@ def main():
         cfg.MODEL.TARGET_SIZE = args.target_size
     if args.sparsity_coeff is not None:
         cfg.MODEL.SPARSITY_COEFF = args.sparsity_coeff
+    
+    # Training mode
+    if args.pairwise:
+        cfg.TRAIN.USE_SEQUENCE_LOSS = False
+        print("Using pairwise (single-step) training mode")
+    if args.sequence_length is not None:
+        cfg.TRAIN.SEQUENCE_LENGTH = args.sequence_length
     
     # Auto-detect device
     if args.device == 'cuda' and not torch.cuda.is_available():

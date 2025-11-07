@@ -142,7 +142,7 @@ class VectorWrapper(Wrapper):
         rng: Optional[torch.Generator] = None,
         window_length: int = 10,
     ) -> torch.Tensor:
-        """Generate a batch of sequence windows.
+        """Generate a batch of sequence windows using vectorized operations.
         
         Args:
             rng: Random number generator
@@ -154,18 +154,22 @@ class VectorWrapper(Wrapper):
         """
         init_states = self.reset(rng)  # [batch_size, state_dim]
         
-        # Generate sequences for each initial state in the batch
-        sequences = []
-        for i in range(self.batch_size):
-            seq = generate_sequence_window(
-                lambda s: self.env.step(s, None),
-                init_states[i],
-                window_length
-            )
-            sequences.append(seq)
+        # Vectorized sequence generation: use generate_trajectory with batched step
+        # This is much faster than the Python loop
+        trajectories = generate_trajectory(
+            self.step,
+            init_states,
+            length=window_length
+        )  # [window_length, batch_size, state_dim]
         
-        # Stack and transpose to [batch_size, window_length+1, state_dim]
-        return torch.stack(sequences, dim=0)
+        # Stack initial states with trajectories: [batch_size, window_length+1, state_dim]
+        sequences = torch.cat([
+            init_states.unsqueeze(0),  # [1, batch_size, state_dim]
+            trajectories
+        ], dim=0)  # [window_length+1, batch_size, state_dim]
+        
+        # Transpose to [batch_size, window_length+1, state_dim]
+        return sequences.transpose(0, 1)
 
 
 # ---------------------------------------------------------------------------

@@ -393,7 +393,7 @@ class EvaluationSettings:
 def evaluate_model(
     model: KoopmanMachine,
     cfg: Config,
-    device: torch.device | str = "cpu",
+    device: torch.device | str = "cuda",
     settings: Optional[EvaluationSettings] = None,
     output_dir: Optional[Path] = None,
 ) -> Dict[str, Dict]:
