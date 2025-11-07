@@ -459,6 +459,12 @@ def main():
                         help='Latent dimension (overrides config default)')
     parser.add_argument('--sparsity_coeff', type=float, default=None,
                         help='Sparsity loss weight (overrides config default)')
+    parser.add_argument('--reconst_coeff', type=float, default=None,
+                        help='Reconstruction loss weight (overrides config default)')
+    parser.add_argument('--pred_coeff', type=float, default=None,
+                        help='Prediction loss weight (overrides config default)')
+    parser.add_argument('--lista_alpha', type=float, default=None,
+                        help='LISTA soft-threshold alpha (overrides config default)')
     
     # Training mode
     parser.add_argument('--pairwise', action='store_true',
@@ -493,6 +499,12 @@ def main():
         cfg.MODEL.TARGET_SIZE = args.target_size
     if args.sparsity_coeff is not None:
         cfg.MODEL.SPARSITY_COEFF = args.sparsity_coeff
+    if args.reconst_coeff is not None:
+        cfg.MODEL.RECONST_COEFF = args.reconst_coeff
+    if args.pred_coeff is not None:
+        cfg.MODEL.PRED_COEFF = args.pred_coeff
+    if args.lista_alpha is not None:
+        cfg.MODEL.ENCODER.LISTA.ALPHA = args.lista_alpha
     
     # Training mode
     if args.pairwise:
