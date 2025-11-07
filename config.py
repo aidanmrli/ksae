@@ -226,7 +226,7 @@ class TrainConfig:
     BATCH_SIZE: int = 256
     DATA_SIZE: int = 256 * 8  # total dataset size
     LR: float = 1e-3  # main learning rate
-
+    WEIGHT_DECAY: float = 1e-4  # weight decay for AdamW optimizer
 
 @dataclass
 class Config:
