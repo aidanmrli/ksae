@@ -268,6 +268,8 @@ def train(
         dt = cfg.ENV.LORENZ63.DT
     elif env_name == 'parabolic':
         dt = cfg.ENV.PARABOLIC.DT
+    elif env_name == 'lyapunov':
+        dt = cfg.ENV.LYAPUNOV.DT
     else:
         dt = 0.01  # default fallback
     
@@ -386,6 +388,8 @@ def train(
     
     eval_dir = run_dir / "evaluation"
     eval_settings = EvaluationSettings()
+    # Only evaluate on the system the model was trained on
+    eval_settings.systems = [cfg.ENV.ENV_NAME]
     eval_results = evaluate_model(
         model=model,
         cfg=cfg,
@@ -437,7 +441,7 @@ def main():
                         help='Training configuration preset')
     parser.add_argument('--env', type=str, default='duffing',
                         choices=['duffing', 'pendulum', 'lotka_volterra', 
-                                'lorenz63', 'parabolic'],
+                                'lorenz63', 'parabolic', 'lyapunov'],
                         help='Dynamical system environment')
     
     # Training

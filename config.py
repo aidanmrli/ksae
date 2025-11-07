@@ -164,6 +164,13 @@ class Lorenz63Config:
 
 
 @dataclass
+class LyapunovConfig:
+    """Lyapunov multi-attractor system parameters."""
+    DT: float = 0.05
+    SIGMA: float = 0.5
+
+
+@dataclass
 class EnvConfig:
     """Environment configuration."""
     ENV_NAME: str = "duffing"  # from ["duffing", "parabolic", "pendulum", "lotka_volterra", "lorenz63"]
@@ -172,6 +179,7 @@ class EnvConfig:
     PENDULUM: PendulumConfig = field(default_factory=PendulumConfig)
     LOTKA_VOLTERRA: LotkaVolterraConfig = field(default_factory=LotkaVolterraConfig)
     LORENZ63: Lorenz63Config = field(default_factory=Lorenz63Config)
+    LYAPUNOV: LyapunovConfig = field(default_factory=LyapunovConfig)
 
 
 @dataclass
@@ -263,6 +271,7 @@ class Config:
             PENDULUM=PendulumConfig(**env_dict.get("PENDULUM", {})),
             LOTKA_VOLTERRA=LotkaVolterraConfig(**env_dict.get("LOTKA_VOLTERRA", {})),
             LORENZ63=Lorenz63Config(**env_dict.get("LORENZ63", {})),
+            LYAPUNOV=LyapunovConfig(**env_dict.get("LYAPUNOV", {})),
         )
         
         model_dict = config_dict.get("MODEL", {})

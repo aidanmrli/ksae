@@ -498,6 +498,67 @@ class Parabolic(Env):
 
 
 # ---------------------------------------------------------------------------
+# Lyapunov Multi-Attractor Environment (from Koopman_learning.ipynb)
+# ---------------------------------------------------------------------------
+
+
+class LyapunovMultiAttractor(Env):
+    """Nonlinear 2D system with many exponentially stable equilibria.
+    
+    Implements the vector field described in the notebook, with equilibria at
+    a fixed set of 13 points and dynamics built from Gaussian bump functions.
+    """
+
+    def __init__(self, cfg: Config):
+        super().__init__(cfg)
+        # Configurable parameters
+        # Defaults chosen to match the notebook example
+        self.dt = getattr(cfg.ENV, 'LYAPUNOV', None).DT if hasattr(cfg.ENV, 'LYAPUNOV') else 0.05
+        self.sigma = getattr(cfg.ENV, 'LYAPUNOV', None).SIGMA if hasattr(cfg.ENV, 'LYAPUNOV') else 0.5
+
+        # Stable points (equilibria)
+        self.points = torch.tensor([
+            [-1.0, -1.0], [ 1.0, -1.0], [-1.0,  1.0], [ 1.0,  1.0],
+            [ 0.0,  0.0],
+            [-1.0, -2.0], [ 1.0, -2.0], [-1.0,  2.0], [ 1.0,  2.0],
+            [-2.0, -1.0], [ 2.0, -1.0], [-2.0,  1.0], [ 2.0,  1.0],
+        ], dtype=torch.float32)
+
+        self._sigma2 = float(self.sigma) * float(self.sigma)
+
+    @property
+    def action_size(self) -> int:
+        return 0
+
+    def reset(self, rng: Optional[torch.Generator] = None) -> torch.Tensor:
+        if rng is None:
+            rng = torch.Generator()
+        x1 = torch.empty(1).uniform_(-2.5, 2.5, generator=rng)
+        x2 = torch.empty(1).uniform_(-2.5, 2.5, generator=rng)
+        return torch.tensor([x1.item(), x2.item()], dtype=torch.float32)
+
+    def step(self, state: torch.Tensor, action: Optional[torch.Tensor] = None) -> torch.Tensor:
+        sigma2 = self._sigma2
+
+        def dynamics_fn(state: torch.Tensor, action: Optional[torch.Tensor] = None) -> torch.Tensor:
+            # Vectorized over all equilibrium points
+            diff = state.unsqueeze(0) - self.points  # [M, 2]
+            r2 = (diff * diff).sum(dim=1)  # [M]
+            normx2 = torch.dot(state, state)
+
+            # First term: - 2/sigma^2 * sum_i diff_i * (||x||^2 * exp(-||x-p_i||^2 / sigma^2))
+            psi1 = normx2 * torch.exp(-r2 / sigma2)  # [M]
+            term1 = (-2.0 / sigma2) * (psi1.unsqueeze(1) * diff).sum(dim=0)  # [2]
+
+            # Second term: -sum_i diff_i * exp(-||x-p_i||^2 / sigma^2)
+            psi2 = torch.exp(-r2 / sigma2)  # [M]
+            term2 = -(psi2.unsqueeze(1) * diff).sum(dim=0)  # [2]
+
+            return term1 + term2
+
+        return integrate_rk4(state, None, self.dt, dynamics_fn)
+
+# ---------------------------------------------------------------------------
 # Registry and Factory
 # ---------------------------------------------------------------------------
 
@@ -508,6 +569,7 @@ _ENV_REGISTRY = {
     "lotka_volterra": LotkaVolterra,
     "lorenz63": Lorenz63,
     "parabolic": Parabolic,
+    "lyapunov": LyapunovMultiAttractor,
 }
 
 

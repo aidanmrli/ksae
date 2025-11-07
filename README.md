@@ -29,7 +29,7 @@ pip install -e .
 
 ```bash
 # Train with defaults
-python train.py --config generic_sparse --env duffing --num_steps 10000
+python train.py --config generic_sparse --env duffing --num_steps 4000
 
 # Sweep over sparsity coefficient
 python train.py --config generic_sparse --env pendulum --sparsity_coeff 0.001
@@ -38,6 +38,28 @@ python train.py --config generic_sparse --env pendulum --sparsity_coeff 0.1
 
 # Custom learning rate and latent dimension
 python train.py --config lista --env lotka_volterra --lr 1e-4 --target_size 1024
+
+python train.py \
+  --config generic_sparse \
+  --env lyapunov \
+  --num_steps 5000 \
+  --batch_size 256 \
+  --target_size 64 \
+  --sparsity_coeff 0.001 \
+  --pairwise \
+  --seed 0 \
+  --device cuda
+
+python train.py \
+  --config lista \
+  --env lyapunov \
+  --num_steps 4000 \
+  --batch_size 256 \
+  --target_size 128 \
+  --sparsity_coeff 0.01 \
+  --pairwise \
+  --seed 0 \
+  --device cuda
 ```
 
 ### Programmatic Training
