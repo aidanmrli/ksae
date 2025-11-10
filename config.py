@@ -365,8 +365,8 @@ def get_train_lista_config() -> Config:
     cfg.MODEL.PRED_COEFF = 0.0
     cfg.MODEL.SPARSITY_COEFF = 1.0
     cfg.MODEL.NORM_FN = "id"
-    cfg.MODEL.ENCODER.LISTA.L = 1e4
-    cfg.MODEL.ENCODER.LISTA.ALPHA = 0.1
+    cfg.MODEL.ENCODER.LISTA.L = 0.1
+    cfg.MODEL.ENCODER.LISTA.ALPHA = 5e-3
     return cfg
 
 

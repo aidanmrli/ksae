@@ -60,7 +60,6 @@ python train.py \
   --target_size 64 \
   --reconst_coeff 0.02 \
   --pred_coeff 1.0 \
-  --sparsity_coeff 0.001 \
   --pairwise \
   --seed 0 \
   --device cuda
