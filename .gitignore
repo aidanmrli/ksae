@@ -210,3 +210,5 @@ __marimo__/
 # Runs
 runs/*
 plots/*
+
+.DS_Store
