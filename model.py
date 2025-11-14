@@ -456,36 +456,6 @@ class KoopmanMachine(ABC, nn.Module):
         
         return x_traj
     
-    def decoder_column_norm_regularization(self) -> torch.Tensor:
-        """Compute decoder column normalization penalty.
-        
-        For decoders with weight matrices, penalizes deviation from unit-norm columns.
-        
-        Returns:
-            Scalar regularization loss
-        """
-        reg_loss = 0.0
-        count = 0
-        
-        # Find decoder parameters (works for both GenericKM and LISTAKM)
-        if hasattr(self, 'decoder') and hasattr(self.decoder, 'network'):
-            # GenericKM case: decoder is MLPCoder with sequential network
-            for module in self.decoder.network:
-                if isinstance(module, nn.Linear):
-                    # Weight shape: [out_features, in_features]
-                    # We want column norms (over out_features dimension)
-                    col_norms = torch.norm(module.weight, dim=0)  # [in_features]
-                    reg_loss += torch.mean((col_norms - 1.0) ** 2)
-                    count += 1
-        elif hasattr(self, 'dict'):
-            # LISTAKM case: decoder dictionary with shape [zdim, xdim]
-            # Columns are along dimension 1
-            col_norms = torch.norm(self.dict, dim=1)  # [zdim]
-            reg_loss += torch.mean((col_norms - 1.0) ** 2)
-            count += 1
-        
-        return reg_loss / max(count, 1)
-    
     def loss(
         self,
         x: torch.Tensor,
@@ -517,9 +487,6 @@ class KoopmanMachine(ABC, nn.Module):
         sparsity_loss += self.sparsity_loss(nx)
         sparsity_loss *= 0.5
         
-        # Decoder regularization
-        decoder_reg = self.decoder_column_norm_regularization()
-        
         # Koopman matrix eigenvalues
         with torch.no_grad():
             eigvals = torch.linalg.eigvals(kmat)
@@ -536,8 +503,7 @@ class KoopmanMachine(ABC, nn.Module):
             self.cfg.MODEL.RES_COEFF * residual_loss +
             self.cfg.MODEL.RECONST_COEFF * reconst_loss +
             self.cfg.MODEL.PRED_COEFF * prediction_loss +
-            self.cfg.MODEL.SPARSITY_COEFF * sparsity_loss +
-            self.cfg.MODEL.DECODER_REG_COEFF * decoder_reg
+            self.cfg.MODEL.SPARSITY_COEFF * sparsity_loss
         )
         
         metrics = {
@@ -546,7 +512,6 @@ class KoopmanMachine(ABC, nn.Module):
             'reconst_loss': reconst_loss.item(),
             'prediction_loss': prediction_loss.item(),
             'sparsity_loss': sparsity_loss.item(),
-            'decoder_reg': decoder_reg.item(),
             'A_max_eigenvalue': max_eigenvalue.item(),
             'sparsity_ratio': sparsity_ratio.item(),
         }
@@ -630,9 +595,6 @@ class KoopmanMachine(ABC, nn.Module):
         # Sparsity loss: L1 on latents averaged over sequence
         sparsity_loss = torch.norm(z_seq, p=1, dim=-1).mean()
         
-        # Decoder regularization
-        decoder_reg = self.decoder_column_norm_regularization()
-        
         # Metrics for monitoring
         with torch.no_grad():
             kmat = self.kmatrix()
@@ -647,8 +609,7 @@ class KoopmanMachine(ABC, nn.Module):
             self.cfg.MODEL.RES_COEFF * alignment_loss +
             self.cfg.MODEL.RECONST_COEFF * reconst_loss +
             self.cfg.MODEL.PRED_COEFF * prediction_loss +
-            self.cfg.MODEL.SPARSITY_COEFF * sparsity_loss +
-            self.cfg.MODEL.DECODER_REG_COEFF * decoder_reg
+            self.cfg.MODEL.SPARSITY_COEFF * sparsity_loss
         )
         
         metrics = {
@@ -657,7 +618,6 @@ class KoopmanMachine(ABC, nn.Module):
             'reconst_loss': reconst_loss.item(),
             'prediction_loss': prediction_loss.item(),
             'sparsity_loss': sparsity_loss.item(),
-            'decoder_reg': decoder_reg.item(),
             'A_max_eigenvalue': max_eigenvalue.item(),
             'sparsity_ratio': sparsity_ratio.item(),
         }
