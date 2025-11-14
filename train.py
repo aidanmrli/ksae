@@ -392,8 +392,10 @@ def train(
             print(f"  Skipping {checkpoint_name}: checkpoint not found at {checkpoint_path}")
             return None
         
-        print(f"\nEvaluating {checkpoint_name} checkpoint...")
+        print(f"\nEvaluating {checkpoint_name} checkpoint...", flush=True)
         checkpoint = torch.load(checkpoint_path, map_location=device)
+        ckpt_step = checkpoint.get('step', 'unknown')
+        print(f"  Loaded checkpoint (step={ckpt_step}). Building eval env/model...", flush=True)
         
         # Load model from checkpoint (use unwrapped env for observation_size)
         eval_env = make_env(cfg)
@@ -409,6 +411,7 @@ def train(
         
         # Evaluate
         eval_dir = run_dir / f"evaluation_{checkpoint_name}"
+        print(f"  Calling evaluate_model() for systems={eval_settings.systems} ...", flush=True)
         eval_results = evaluate_model(
             model=eval_model,
             cfg=cfg,
@@ -416,6 +419,7 @@ def train(
             settings=eval_settings,
             output_dir=eval_dir,
         )
+        print(f"  evaluate_model() finished for {checkpoint_name}.", flush=True)
         
         # Save results
         results_file = run_dir / f"evaluation_results_{checkpoint_name}.json"
