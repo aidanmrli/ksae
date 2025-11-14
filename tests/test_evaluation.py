@@ -1,5 +1,6 @@
 """Unit tests for the evaluation utilities."""
 
+import numpy as np
 import torch
 
 from config import get_config
@@ -10,6 +11,8 @@ from evaluation import (
     rollout_every_step_reencode,
     rollout_no_reencode,
     rollout_periodic_reencode,
+    _estimate_learned_attractors,
+    _save_lyapunov_phase_portrait_comparison,
 )
 from model import make_model
 
@@ -70,4 +73,49 @@ def test_evaluate_model_generates_outputs(tmp_path):
 
     curve_png = tmp_path / "duffing" / "mse_vs_horizon.png"
     assert curve_png.exists(), "Evaluation should write MSE curve plot"
+
+
+def test_estimate_learned_attractors_contracts_to_origin():
+    class DummyModel(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.register_parameter("bias", torch.nn.Parameter(torch.zeros(1)))
+
+        def step_env(self, state: torch.Tensor) -> torch.Tensor:
+            return state * 0.5
+
+    model = DummyModel()
+    attractors = _estimate_learned_attractors(
+        model=model,
+        grid_lim=1.0,
+        num_samples=16,
+        num_steps=6,
+        tolerance=1e-3,
+        device=torch.device("cpu"),
+    )
+
+    assert attractors.shape[0] == 1
+    assert np.allclose(attractors[0], 0.0, atol=1e-2)
+
+
+def test_lyapunov_phase_portrait_outputs(tmp_path):
+    model, _, cfg = _build_model_and_states("lyapunov")
+    env = make_env(cfg)
+
+    comp_path = tmp_path / "comparison.png"
+    files = _save_lyapunov_phase_portrait_comparison(
+        model=model,
+        env=env,
+        path=comp_path,
+        num_trajectories=1,
+        grid_lim=0.75,
+        grid_n=5,
+    )
+
+    assert comp_path.exists()
+    true_hist = tmp_path / "phase_portrait_vector_hist_true.png"
+    learned_hist = tmp_path / "phase_portrait_vector_hist_learned.png"
+    assert true_hist.exists()
+    assert learned_hist.exists()
+    assert "phase_portrait_comparison" in files
 

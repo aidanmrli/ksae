@@ -430,6 +430,93 @@ def _save_error_curve_combined(
     plt.close(fig)
 
 
+def _save_vector_magnitude_histogram(
+    magnitudes: np.ndarray,
+    path: Path,
+    title: str,
+    bins: int = 30,
+) -> None:
+    """Save a histogram of vector magnitudes used in a phase portrait."""
+
+    flat = np.asarray(magnitudes, dtype=np.float32).ravel()
+    if flat.size == 0:
+        return
+
+    _ensure_matplotlib()
+    import matplotlib.pyplot as plt
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+
+    fig, ax = plt.subplots(1, 1, figsize=(6, 4))
+    ax.hist(flat, bins=bins, color="#4682B4", alpha=0.85, edgecolor="white")
+    ax.set_xlabel("Vector magnitude")
+    ax.set_ylabel("Count")
+    ax.set_title(title)
+    ax.grid(True, linestyle=":", alpha=0.4)
+    fig.tight_layout()
+    fig.savefig(path, dpi=200)
+    plt.close(fig)
+
+
+def _estimate_learned_attractors(
+    model: KoopmanMachine,
+    grid_lim: float,
+    num_samples: int,
+    num_steps: int,
+    tolerance: float,
+    device: torch.device,
+    seed: int = 7,
+) -> np.ndarray:
+    """Estimate attractor locations of the learned system via rollouts."""
+
+    rng = np.random.default_rng(seed)
+    samples = rng.uniform(-grid_lim, grid_lim, size=(num_samples, 2)).astype(np.float32)
+    attractors: List[np.ndarray] = []
+
+    print(
+        f"[lyapunov] Estimating learned attractors (samples={num_samples}, "
+        f"steps={num_steps}, tolerance={tolerance})",
+        flush=True,
+    )
+
+    report_interval = max(1, num_samples // 5)
+    for idx, sample in enumerate(samples):
+        state = torch.from_numpy(sample).to(device)
+        with torch.no_grad():
+            for _ in range(num_steps):
+                state = model.step_env(state.unsqueeze(0)).squeeze(0)
+        final_state = state.cpu().numpy()
+
+        # NOTE: check this? we are just making the first final 
+        # state an attractor
+        if not attractors:
+            attractors.append(final_state)
+            continue
+
+        existing = np.asarray(attractors)
+        dists = np.linalg.norm(existing - final_state, axis=1)
+        if float(dists.min()) > tolerance:
+            attractors.append(final_state)
+
+        if (idx + 1) % report_interval == 0 or (idx + 1) == num_samples:
+            print(
+                f"[lyapunov]   processed {idx + 1}/{num_samples} samples "
+                f"(unique attractors={len(attractors)})",
+                flush=True,
+            )
+
+    if not attractors:
+        print("[lyapunov] No attractors detected; returning empty array.", flush=True)
+        return np.empty((0, samples.shape[1]), dtype=np.float32)
+
+    stacked = np.stack(attractors, axis=0)
+    print(
+        f"[lyapunov] Attractor estimation complete: {len(attractors)} unique points.",
+        flush=True,
+    )
+    return stacked
+
+
 def _save_lyapunov_phase_portrait_comparison(
     model: KoopmanMachine,
     env: LyapunovMultiAttractor,
@@ -437,14 +524,10 @@ def _save_lyapunov_phase_portrait_comparison(
     num_trajectories: int = 12,
     grid_lim: float = 3.0,
     grid_n: int = 15,
-) -> None:
-    """Notebook-style comparison plot for the Lyapunov system.
+) -> Dict[str, str]:
+    """Notebook-style comparison plot for the Lyapunov system with extras."""
 
-    Left: true system (vector field + trajectories + attractors + Voronoi).
-    Right: learned system using model.step_env (same visuals, no Voronoi).
-
-    This mirrors notebooks/Koopman_learning.py while reusing our env/model.
-    """
+    print("[lyapunov] Preparing phase portrait comparison...", flush=True)
 
     # Lazy imports for plotting and optional Voronoi
     _ensure_matplotlib()
@@ -462,29 +545,63 @@ def _save_lyapunov_phase_portrait_comparison(
 
     # Colors per-attractor (tab20 like in the notebook)
     import matplotlib.cm as cm
-    points_np = env.points.cpu().numpy()
-    colors = cm.tab20(np.linspace(0, 1, len(points_np)))
+    true_points = env.points.cpu().numpy()
 
+    # Estimate learned attractors numerically to build Voronoi regions.
+    learned_points = _estimate_learned_attractors(
+        model=model,
+        grid_lim=grid_lim,
+        num_samples=min(max(grid_n**2, 64), 100),
+        num_steps=max(int(8.0 / dt), 75),
+        tolerance=0.2,
+        device=device,
+    )
+    print(
+        f"[lyapunov] Learned attractor candidates: {learned_points.shape if learned_points.size else (0, 2)}",
+        flush=True,
+    )
+
+    produced_files: Dict[str, str] = {}
     fig, axes = plt.subplots(1, 2, figsize=(20, 8))
 
     for ax, title, use_learned in (
         (axes[0], "True System", False),
         (axes[1], "Learned System", True),
     ):
-        # Optional Voronoi regions for the true system
-        if not use_learned and HAS_SCIPY:
-            vor = Voronoi(points_np)
+        print(f"[lyapunov] Rendering '{title}' panel (use_learned={use_learned})", flush=True)
+        display_points = (
+            learned_points if use_learned and learned_points.size > 0 else true_points
+        )
+        num_points = max(len(display_points), 1)
+        colors = cm.tab20(np.linspace(0, 1, num_points))
+
+        # Optional Voronoi regions for both systems (true + learned estimate)
+        if HAS_SCIPY and len(display_points) >= 3:
+            vor = Voronoi(display_points)
             for i, point_idx in enumerate(vor.point_region):
                 region = vor.regions[point_idx]
                 if not region or -1 in region:
                     continue
                 verts = np.array([vor.vertices[j] for j in region])
                 if len(verts) > 0:
-                    ax.fill(verts[:, 0], verts[:, 1], color=colors[i], alpha=0.25, zorder=1)
+                    ax.fill(
+                        verts[:, 0],
+                        verts[:, 1],
+                        color=colors[i % len(colors)],
+                        alpha=0.2 if use_learned else 0.25,
+                        zorder=1,
+                    )
             for simplex in vor.ridge_vertices:
                 simplex = np.asarray(simplex)
                 if np.all(simplex >= 0):
-                    ax.plot(vor.vertices[simplex, 0], vor.vertices[simplex, 1], 'k-', linewidth=1.0, alpha=0.8, zorder=2)
+                    ax.plot(
+                        vor.vertices[simplex, 0],
+                        vor.vertices[simplex, 1],
+                        'k-',
+                        linewidth=1.0,
+                        alpha=0.7 if use_learned else 0.8,
+                        zorder=2,
+                    )
 
         # Grid and vector field (approximate using one-step delta / dt)
         xs = np.linspace(-grid_lim, grid_lim, grid_n)
@@ -505,19 +622,56 @@ def _save_lyapunov_phase_portrait_comparison(
                 vel = (nx - state_t) / dt
                 U[i, j], V[i, j] = float(vel[0].item()), float(vel[1].item())
 
-        # Normalize vectors for quiver aesthetics
-        N = np.sqrt(U**2 + V**2)
-        N = np.where(N == 0, 1.0, N)
-        U_n, V_n = U / N, V / N
-        ax.quiver(X, Y, U_n, V_n, color='gray', alpha=0.6, scale=25, zorder=3)
+        magnitudes = np.sqrt(U**2 + V**2)
+        scale_den = np.where(magnitudes == 0, 1.0, magnitudes)
+        U_n, V_n = U / scale_den, V / scale_den
+        max_mag = float(magnitudes.max()) if magnitudes.size else 0.0
+        linewidths = (
+            0.75 + 2.25 * (magnitudes / (max_mag + 1e-6))
+            if max_mag > 0
+            else np.full_like(magnitudes, 0.75)
+        )
+        ax.quiver(
+            X,
+            Y,
+            U_n,
+            V_n,
+            color='gray',
+            alpha=0.65,
+            scale=25,
+            linewidths=linewidths.ravel(),
+            zorder=3,
+        )
 
-        # Plot attractors
-        for k, p in enumerate(points_np):
-            ax.plot(p[0], p[1], 'o', color=colors[k], markersize=10,
-                    markeredgecolor='black', markeredgewidth=2, zorder=6)
+        hist_suffix = "learned" if use_learned else "true"
+        hist_path = path.parent / f"phase_portrait_vector_hist_{hist_suffix}.png"
+        print(
+            f"[lyapunov] Saving vector magnitude histogram ({hist_suffix}) to {hist_path}",
+            flush=True,
+        )
+        _save_vector_magnitude_histogram(
+            magnitudes,
+            hist_path,
+            title=f"{title} vector magnitudes",
+        )
+        produced_files[f"phase_portrait_vector_hist_{hist_suffix}"] = str(hist_path)
+
+        marker_style = 's' if use_learned else 'o'
+        for k, p in enumerate(display_points):
+            ax.plot(
+                p[0],
+                p[1],
+                marker_style,
+                color=colors[k % len(colors)],
+                markersize=10,
+                markeredgecolor='black',
+                markeredgewidth=2,
+                zorder=6,
+            )
 
         # Simulate trajectories from random initial conditions
         rng = np.random.default_rng(42)
+        comparison_points = display_points if len(display_points) > 0 else true_points
         for _ in range(num_trajectories):
             x0 = rng.uniform(-2.5, 2.5, size=2).astype(np.float32)
             state = torch.from_numpy(x0)
@@ -533,17 +687,30 @@ def _save_lyapunov_phase_portrait_comparison(
 
             traj_arr = np.asarray(traj)
             final = traj_arr[-1]
-            dists = np.linalg.norm(points_np - final, axis=1)
+            dists = np.linalg.norm(comparison_points - final, axis=1)
             idx = int(np.argmin(dists))
-            ax.plot(traj_arr[:, 0], traj_arr[:, 1], color=colors[idx], lw=2.0, alpha=0.9, zorder=4)
-            ax.plot(x0[0], x0[1], 'o', color=colors[idx], markersize=6, alpha=0.9,
-                    markeredgecolor='white', markeredgewidth=1, zorder=5)
+            color = colors[idx % len(colors)]
+            ax.plot(traj_arr[:, 0], traj_arr[:, 1], color=color, lw=2.0, alpha=0.9, zorder=4)
+            ax.plot(
+                x0[0],
+                x0[1],
+                marker_style,
+                color=color,
+                markersize=6,
+                alpha=0.9,
+                markeredgecolor='white',
+                markeredgewidth=1,
+                zorder=5,
+            )
 
         ax.set_xlim(-grid_lim, grid_lim)
         ax.set_ylim(-grid_lim, grid_lim)
         ax.set_xlabel('x1', fontsize=12)
         ax.set_ylabel('x2', fontsize=12)
-        ax.set_title(title, fontsize=14)
+        ax.set_title(
+            title if not use_learned else f"{title} (Voronoi est.)",
+            fontsize=14,
+        )
         ax.grid(True, alpha=0.3)
         ax.set_aspect('equal')
 
@@ -551,6 +718,10 @@ def _save_lyapunov_phase_portrait_comparison(
     fig.tight_layout()
     fig.savefig(path, dpi=200)
     plt.close(fig)
+    print(f"[lyapunov] Phase portrait comparison saved to {path}", flush=True)
+
+    produced_files["phase_portrait_comparison"] = str(path)
+    return produced_files
 
 # ---------------------------------------------------------------------------
 # Evaluation driver
@@ -705,6 +876,12 @@ def evaluate_model(
     if settings is None:
         settings = EvaluationSettings()
 
+    print(
+        f"[evaluate_model] Starting evaluation for systems={tuple(settings.systems)} "
+        f"with horizons={tuple(settings.horizons)}",
+        flush=True,
+    )
+
     model = model.to(device)
     model.eval()
 
@@ -712,12 +889,18 @@ def evaluate_model(
     results: Dict[str, Dict] = {}
 
     for system in settings.systems:
+        print(f"[evaluate_model] -> System '{system}': preparing environment...", flush=True)
         eval_cfg = Config.from_dict(cfg.to_dict())
         eval_cfg.ENV.ENV_NAME = system
 
         base_env = make_env(eval_cfg)
         if base_env.observation_size != model.observation_size:
             # Skip incompatible systems to avoid runtime errors
+            print(
+                f"[evaluate_model] -> System '{system}': skipped because "
+                f"observation size {base_env.observation_size} != model {model.observation_size}",
+                flush=True,
+            )
             continue
 
         vec_env = VectorWrapper(base_env, settings.batch_size)
@@ -725,12 +908,21 @@ def evaluate_model(
         init_states = vec_env.reset(rng)  # CPU tensor
 
         # Generate ground truth trajectories (time-major)
+        print(
+            f"[evaluate_model] -> System '{system}': generating ground-truth trajectory "
+            f"(batch={settings.batch_size}, horizon={max_horizon})",
+            flush=True,
+        )
         true_future = generate_trajectory(vec_env.step, init_states, length=max_horizon)
 
         # Prepare initial states on device for model rollout
         init_states_device = init_states.to(device)
 
         predictions: Dict[str, torch.Tensor] = {}
+        print(
+            f"[evaluate_model] -> System '{system}': running rollout modes...",
+            flush=True,
+        )
         predictions["no_reencode"] = rollout_no_reencode(model, init_states_device, max_horizon)
         predictions["every_step"] = rollout_every_step_reencode(model, init_states_device, max_horizon)
 
@@ -750,6 +942,10 @@ def evaluate_model(
         # Convert ground truth to match predictions for metric computation
         true_future_cpu = true_future.float()
 
+        print(
+            f"[evaluate_model] -> System '{system}': computing metrics for {len(predictions)} modes...",
+            flush=True,
+        )
         for mode_name, pred in predictions.items():
             pred_cpu = pred.detach().cpu().float()
 
@@ -803,6 +999,10 @@ def evaluate_model(
         if output_dir is not None:
             system_dir = output_dir / system
             system_dir.mkdir(parents=True, exist_ok=True)
+            print(
+                f"[evaluate_model] -> System '{system}': saving plots to {system_dir}",
+                flush=True,
+            )
 
             # JAX-style phase portrait grid (matches notebooks/koopman_copy.py)
             portrait_path = system_dir / "phase_portrait_plot_eval.png"
@@ -846,8 +1046,16 @@ def evaluate_model(
                 try:
                     lyap_env = make_env(eval_cfg)
                     comp_path = system_dir / "phase_portrait_comparison.png"
-                    _save_lyapunov_phase_portrait_comparison(model, lyap_env, comp_path)
-                    files["phase_portrait_comparison"] = str(comp_path)
+                    print(
+                        "[evaluate_model] -> System 'lyapunov': generating comparison + hist plots...",
+                        flush=True,
+                    )
+                    lyap_files = _save_lyapunov_phase_portrait_comparison(
+                        model,
+                        lyap_env,
+                        comp_path,
+                    )
+                    files.update(lyap_files)
                 except Exception as e:  # pragma: no cover - visualization best-effort
                     # Don't fail evaluation if visualization fails
                     print(f"[warn] Lyapunov comparison plot failed: {e}")
@@ -865,6 +1073,7 @@ def evaluate_model(
             json.dump(results, f, indent=2)
         results["metrics_file"] = str(metrics_path)
 
+    print("[evaluate_model] Finished evaluation for all requested systems.", flush=True)
     return results
 
 
