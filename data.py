@@ -352,7 +352,7 @@ class Duffing(Env):
     def reset(self, rng: Optional[torch.Generator] = None) -> torch.Tensor:
         if rng is None:
             rng = torch.Generator()
-        x1 = torch.empty(1).uniform_(-2.0, 2.0, generator=rng)
+        x1 = torch.empty(1).uniform_(-1.5, 1.5, generator=rng)
         x2 = torch.empty(1).uniform_(-1.0, 1.0, generator=rng)
         return torch.tensor([x1.item(), x2.item()], dtype=torch.float32)
 
