@@ -370,6 +370,66 @@ def _save_mse_curve_plot(curves: Dict[str, List[float]], path: Path, highlight_h
     plt.close(fig)
 
 
+def _save_error_curve_single_mode(
+    errors: torch.Tensor,
+    path: Path,
+    title: Optional[str] = None,
+) -> None:
+    """Save per-timestep mean L2 error for a single rollout mode."""
+
+    _ensure_matplotlib()
+    import matplotlib.pyplot as plt
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+
+    error_np = errors.cpu().numpy()
+    steps = np.arange(1, error_np.shape[0] + 1)
+
+    fig, ax = plt.subplots(1, 1, figsize=(7, 5))
+    ax.plot(steps, error_np, linewidth=2)
+    ax.set_xlabel("Prediction step")
+    ax.set_ylabel("Mean L2 error")
+    ax.set_title(title or "Per-step prediction error")
+    ax.grid(True, linestyle=":", alpha=0.4)
+    fig.tight_layout()
+    fig.savefig(path, dpi=200)
+    plt.close(fig)
+
+
+def _save_error_curve_combined(
+    errors_by_mode: Dict[str, torch.Tensor],
+    path: Path,
+    highlight_steps: Optional[Sequence[int]] = None,
+) -> None:
+    """Save combined per-step mean error curves for all rollout modes."""
+
+    _ensure_matplotlib()
+    import matplotlib.pyplot as plt
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+
+    fig, ax = plt.subplots(1, 1, figsize=(7, 5))
+    for mode, errors in errors_by_mode.items():
+        error_np = errors.cpu().numpy()
+        steps = np.arange(1, error_np.shape[0] + 1)
+        ax.plot(steps, error_np, linewidth=2, label=mode)
+
+    if highlight_steps is not None:
+        for step in highlight_steps:
+            if step <= 0:
+                continue
+            ax.axvline(step, color="gray", linestyle="--", linewidth=1.0, alpha=0.5)
+
+    ax.set_xlabel("Prediction step")
+    ax.set_ylabel("Mean L2 error")
+    ax.set_title("Per-step prediction error (all modes)")
+    ax.grid(True, linestyle=":", alpha=0.4)
+    ax.legend()
+    fig.tight_layout()
+    fig.savefig(path, dpi=300)
+    plt.close(fig)
+
+
 def _save_lyapunov_phase_portrait_comparison(
     model: KoopmanMachine,
     env: LyapunovMultiAttractor,
@@ -497,6 +557,108 @@ def _save_lyapunov_phase_portrait_comparison(
 # ---------------------------------------------------------------------------
 
 
+def _make_km_env_n_step(
+    model: KoopmanMachine,
+    x: torch.Tensor,
+    length: int,
+    reencode_at_every: int,
+) -> torch.Tensor:
+    """Torch analogue of notebooks/koopman_copy.py::make_km_env_n_step."""
+    device = next(model.parameters()).device
+    x = x.to(device)
+
+    with torch.no_grad():
+        if reencode_at_every == 1:
+            traj = []
+            state = x
+            for _ in range(length):
+                state = model.step_env(state)
+                traj.append(state.detach().cpu())
+            return torch.stack(traj, dim=0)
+        elif reencode_at_every == 0:
+            traj = []
+            latent = model.encode(x)
+            for _ in range(length):
+                latent = model.step_latent(latent)
+                decoded = model.decode(latent)
+                traj.append(decoded.detach().cpu())
+            return torch.stack(traj, dim=0)
+        else:
+            assert length % reencode_at_every == 0, (
+                "length must be divisible by reencode_at_every when > 1"
+            )
+            state = x
+            num_slices = length // reencode_at_every
+            chunks: List[torch.Tensor] = []
+            for _ in range(num_slices):
+                latent = model.encode(state)
+                chunk_states = []
+                z = latent
+                for _ in range(reencode_at_every):
+                    z = model.step_latent(z)
+                    decoded = model.decode(z)
+                    chunk_states.append(decoded.detach().cpu())
+                chunk = torch.stack(chunk_states, dim=0)
+                chunks.append(chunk)
+                state = chunk[-1].to(device)
+            return torch.cat(chunks, dim=0)
+
+    raise RuntimeError("Failed to generate Koopman rollout")
+
+
+def _save_jax_style_phase_portraits(
+    model: KoopmanMachine,
+    base_env,
+    cfg: Config,
+    settings: "EvaluationSettings",
+    path: Path,
+) -> None:
+    """Replicate notebooks/koopman_copy.py phase-portrait generation exactly."""
+    if base_env.observation_size < 2:
+        return
+
+    _ensure_matplotlib()
+    import matplotlib.pyplot as plt
+
+    batch_size = settings.phase_portrait_batch_size
+    length = settings.phase_portrait_length
+    reencode_periods = settings.phase_portrait_reencode_periods
+
+    vec_env = VectorWrapper(base_env, batch_size)
+    rng = torch.Generator().manual_seed(cfg.SEED + settings.seed_offset + 999)
+    init_states = vec_env.reset(rng)  # CPU tensor
+
+    trajectories = {}
+    for period in reencode_periods:
+        traj = _make_km_env_n_step(model, init_states, length, period)
+        trajectories[period] = traj  # [length, batch, obs_dim] on CPU
+
+    num_modes = len(reencode_periods)
+    fig, axes = plt.subplots(
+        1, num_modes, figsize=(6 * num_modes, 5), squeeze=False
+    )
+
+    for ax, period in zip(axes[0], reencode_periods):
+        traj = trajectories[period]
+        ax.plot(traj[:, :, 0], traj[:, :, 1])
+        if period == 0:
+            title = "reencode [x]"
+        elif period == 1:
+            title = "reencode @ 1"
+        else:
+            title = f"reencode @ {period}"
+        ax.set_title(title)
+        ax.set_xlabel("x1")
+        ax.set_ylabel("x2")
+        ax.set_aspect("equal", adjustable="box")
+        ax.grid(True, linestyle=":", alpha=0.4)
+
+    fig.tight_layout()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fig.savefig(path, dpi=300)
+    plt.close(fig)
+
+
 @dataclass
 class EvaluationSettings:
     """Container for evaluation hyper-parameters."""
@@ -513,6 +675,9 @@ class EvaluationSettings:
     periodic_reencode_periods: Sequence[int] = (10, 25, 50, 100)
     batch_size: int = 100
     phase_portrait_samples: int = 20
+    phase_portrait_length: int = 200
+    phase_portrait_reencode_periods: Sequence[int] = (0, 1, 10, 25, 50)
+    phase_portrait_batch_size: int = 256
     seed_offset: int = 12345
 
 
@@ -550,18 +715,17 @@ def evaluate_model(
         eval_cfg = Config.from_dict(cfg.to_dict())
         eval_cfg.ENV.ENV_NAME = system
 
-        env = make_env(eval_cfg)
-        if env.observation_size != model.observation_size:
+        base_env = make_env(eval_cfg)
+        if base_env.observation_size != model.observation_size:
             # Skip incompatible systems to avoid runtime errors
             continue
 
-        vec_env = VectorWrapper(env, settings.batch_size)
+        vec_env = VectorWrapper(base_env, settings.batch_size)
         rng = torch.Generator().manual_seed(cfg.SEED + settings.seed_offset)
         init_states = vec_env.reset(rng)  # CPU tensor
 
         # Generate ground truth trajectories (time-major)
         true_future = generate_trajectory(vec_env.step, init_states, length=max_horizon)
-        true_full = torch.cat([init_states.unsqueeze(0), true_future], dim=0)
 
         # Prepare initial states on device for model rollout
         init_states_device = init_states.to(device)
@@ -581,12 +745,17 @@ def evaluate_model(
 
         mode_metrics: Dict[str, Dict] = {}
         periodic_summary: Dict[str, Dict[str, float]] = {str(h): {} for h in settings.horizons}
+        per_step_errors: Dict[str, torch.Tensor] = {}
 
         # Convert ground truth to match predictions for metric computation
         true_future_cpu = true_future.float()
 
         for mode_name, pred in predictions.items():
             pred_cpu = pred.detach().cpu().float()
+
+            per_step_error = torch.norm(pred_cpu - true_future_cpu, dim=-1).mean(dim=1)
+            per_step_errors[mode_name] = per_step_error
+
             squared_diff = torch.sum((pred_cpu - true_future_cpu) ** 2, dim=-1)
             squared_diff = torch.where(torch.isfinite(squared_diff), squared_diff, torch.nan)
 
@@ -635,54 +804,16 @@ def evaluate_model(
             system_dir = output_dir / system
             system_dir.mkdir(parents=True, exist_ok=True)
 
-            # Phase portraits: separate images for each mode at horizon 1000
-            if max(settings.horizons) >= 1000 and true_full.size(0) >= 1001:
-                horizon_key = "1000"
-                true_sequences = true_full[:1001].permute(1, 0, 2)  # [batch, time+1, dim]
-                
-                # Lyapunov system needs wider axis limits
-                plot_axis_lim = 3.0 if system == "lyapunov" else 2.5
-
-                # 1. No reencoding
-                predicted_no_re = predictions["no_reencode"][:1000].permute(1, 0, 2).cpu()
-                portrait_path_no = system_dir / f"phase_portrait_{horizon_key}_no_reencode.png"
-                _save_phase_portrait_single_mode(
-                    true_sequences=true_sequences.cpu(),
-                    predicted=predicted_no_re,
-                    path=portrait_path_no,
-                    max_samples=settings.phase_portrait_samples,
-                    title=f"Phase portrait ({horizon_key}-step) - no_reencode",
-                    axis_lim=plot_axis_lim,
-                )
-                files["phase_portrait_1000_no_reencode"] = str(portrait_path_no)
-
-                # 2. Every step reencoding
-                predicted_every = predictions["every_step"][:1000].permute(1, 0, 2).cpu()
-                portrait_path_every = system_dir / f"phase_portrait_{horizon_key}_every_step.png"
-                _save_phase_portrait_single_mode(
-                    true_sequences=true_sequences.cpu(),
-                    predicted=predicted_every,
-                    path=portrait_path_every,
-                    max_samples=settings.phase_portrait_samples,
-                    title=f"Phase portrait ({horizon_key}-step) - every_step",
-                    axis_lim=plot_axis_lim,
-                )
-                files["phase_portrait_1000_every_step"] = str(portrait_path_every)
-
-                # 3. Best periodic reencoding
-                best_mode_name = best_periodic.get(horizon_key, {}).get("mode")
-                if best_mode_name:
-                    predicted_best = predictions[best_mode_name][:1000].permute(1, 0, 2).cpu()
-                    portrait_path_periodic = system_dir / f"phase_portrait_{horizon_key}_{best_mode_name}.png"
-                    _save_phase_portrait_single_mode(
-                        true_sequences=true_sequences.cpu(),
-                        predicted=predicted_best,
-                        path=portrait_path_periodic,
-                        max_samples=settings.phase_portrait_samples,
-                        title=f"Phase portrait ({horizon_key}-step) - {best_mode_name}",
-                        axis_lim=plot_axis_lim,
-                    )
-                    files["phase_portrait_1000_periodic"] = str(portrait_path_periodic)
+            # JAX-style phase portrait grid (matches notebooks/koopman_copy.py)
+            portrait_path = system_dir / "phase_portrait_plot_eval.png"
+            _save_jax_style_phase_portraits(
+                model=model,
+                base_env=base_env,
+                cfg=cfg,
+                settings=settings,
+                path=portrait_path,
+            )
+            files["phase_portrait_plot_eval"] = str(portrait_path)
 
             curves = {
                 mode: data["mse_curve"]
@@ -691,6 +822,24 @@ def evaluate_model(
             curve_path = system_dir / "mse_vs_horizon.png"
             _save_mse_curve_plot(curves, curve_path, settings.horizons)
             files["mse_curve"] = str(curve_path)
+
+            # Per-mode error curves (analogous to notebook plot_eval)
+            for mode_name, errors in per_step_errors.items():
+                error_path = system_dir / f"error_curve_{mode_name}.png"
+                _save_error_curve_single_mode(
+                    errors,
+                    error_path,
+                    title=f"Per-step error ({mode_name})",
+                )
+                files[f"error_curve_{mode_name}"] = str(error_path)
+
+            combined_error_path = system_dir / "error_curve_combined.png"
+            _save_error_curve_combined(
+                per_step_errors,
+                combined_error_path,
+                highlight_steps=settings.horizons,
+            )
+            files["error_curve_combined"] = str(combined_error_path)
 
             # Additional notebook-style comparison for Lyapunov system
             if system == "lyapunov":
