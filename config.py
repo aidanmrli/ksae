@@ -221,7 +221,6 @@ class ModelConfig:
     RECONST_COEFF: float = 0.02  # reconstruction loss weight
     PRED_COEFF: float = 0.0  # prediction loss weight
     SPARSITY_COEFF: float = 1e-3  # sparsity loss weight (L1 regularization)
-    DECODER_REG_COEFF: float = 0.01  # decoder column-norm regularization weight
     
     # Sub-configs
     ENCODER: EncoderConfig = field(default_factory=EncoderConfig)
@@ -239,7 +238,7 @@ class TrainConfig:
     K_MATRIX_LR: float = 1e-5  # learning rate for Koopman matrix parameters
     
     # Sequence training parameters
-    USE_SEQUENCE_LOSS: bool = True  # use sequence-based loss with ODE integration
+    USE_SEQUENCE_LOSS: bool = False  # default to single-step loss for parity with JAX
     SEQUENCE_LENGTH: int = 10  # number of forward steps in each training sequence (T)
 
 @dataclass
@@ -314,7 +313,7 @@ def get_default_config() -> Config:
 def get_train_generic_km_config() -> Config:
     """Training configuration for GenericKM (standard Koopman AE with MLP encoder)."""
     cfg = Config()
-    cfg.TRAIN.LR = 1e-3
+    cfg.TRAIN.LR = 1e-4
     cfg.MODEL.MODEL_NAME = "GenericKM"
     cfg.MODEL.TARGET_SIZE = 64
     cfg.MODEL.NORM_FN = "id"
@@ -327,7 +326,7 @@ def get_train_generic_km_config() -> Config:
 def get_train_generic_sparse_config() -> Config:
     """Training configuration for GenericKM with L1 regularization."""
     cfg = Config()
-    cfg.TRAIN.LR = 1e-3
+    cfg.TRAIN.LR = 1e-4
     cfg.MODEL.MODEL_NAME = "GenericKM"
     cfg.MODEL.TARGET_SIZE = 64
     cfg.MODEL.NORM_FN = "id"
