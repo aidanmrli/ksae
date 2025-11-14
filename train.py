@@ -386,43 +386,84 @@ def train(
     print("Loading evaluation module...")
     from evaluation import EvaluationSettings, evaluate_model
     
-    eval_dir = run_dir / "evaluation"
-    eval_settings = EvaluationSettings()
-    # Only evaluate on the system the model was trained on
-    eval_settings.systems = [cfg.ENV.ENV_NAME]
-    eval_results = evaluate_model(
-        model=model,
-        cfg=cfg,
-        device=device,
-        settings=eval_settings,
-        output_dir=eval_dir,
-    )
-
-    with open(run_dir / "evaluation_results.json", "w") as f:
-        json.dump(eval_results, f, indent=2)
-
-    primary_system = cfg.ENV.ENV_NAME
-    primary_metrics = eval_results.get(primary_system)
-    if primary_metrics is not None:
-        print(f"Primary system ({primary_system}) MSE summary:")
-        for horizon in eval_settings.horizons:
-            if primary_system == "parabolic" and horizon > 100:
-                continue
-            horizon_key = str(horizon)
-            no_re = primary_metrics["modes"]["no_reencode"]["horizons"].get(horizon_key)
-            every = primary_metrics["modes"]["every_step"]["horizons"].get(horizon_key)
-            best = primary_metrics["best_periodic"].get(horizon_key)
-            if no_re is None or every is None:
-                continue
-            best_str = "best-PR=N/A" if best is None else f"best-PR={best['mean']:.4e} ({best['mode']})"
-            print(
-                f"  Horizon {horizon}: "
-                f"no-reencode={no_re['mean']:.4e}, "
-                f"every-step={every['mean']:.4e}, "
-                f"{best_str}"
-            )
-
-    print(f"Evaluation artifacts saved to {eval_dir}")
+    def evaluate_checkpoint(checkpoint_path: Path, checkpoint_name: str):
+        """Load a checkpoint and evaluate it."""
+        if not checkpoint_path.exists():
+            print(f"  Skipping {checkpoint_name}: checkpoint not found at {checkpoint_path}")
+            return None
+        
+        print(f"\nEvaluating {checkpoint_name} checkpoint...")
+        checkpoint = torch.load(checkpoint_path, map_location=device)
+        
+        # Load model from checkpoint (use unwrapped env for observation_size)
+        eval_env = make_env(cfg)
+        eval_model = make_model(cfg, eval_env.observation_size)
+        eval_model.load_state_dict(checkpoint['model_state_dict'])
+        eval_model = eval_model.to(device)
+        eval_model.eval()
+        eval_model.dt = dt
+        
+        # Create evaluation settings
+        eval_settings = EvaluationSettings()
+        eval_settings.systems = [cfg.ENV.ENV_NAME]
+        
+        # Evaluate
+        eval_dir = run_dir / f"evaluation_{checkpoint_name}"
+        eval_results = evaluate_model(
+            model=eval_model,
+            cfg=cfg,
+            device=device,
+            settings=eval_settings,
+            output_dir=eval_dir,
+        )
+        
+        # Save results
+        results_file = run_dir / f"evaluation_results_{checkpoint_name}.json"
+        with open(results_file, "w") as f:
+            json.dump(eval_results, f, indent=2)
+        
+        # Print summary
+        primary_system = cfg.ENV.ENV_NAME
+        primary_metrics = eval_results.get(primary_system)
+        if primary_metrics is not None:
+            print(f"  {checkpoint_name.upper()} - Primary system ({primary_system}) MSE summary:")
+            for horizon in eval_settings.horizons:
+                if primary_system == "parabolic" and horizon > 100:
+                    continue
+                horizon_key = str(horizon)
+                no_re = primary_metrics["modes"]["no_reencode"]["horizons"].get(horizon_key)
+                every = primary_metrics["modes"]["every_step"]["horizons"].get(horizon_key)
+                best = primary_metrics["best_periodic"].get(horizon_key)
+                if no_re is None or every is None:
+                    continue
+                best_str = "best-PR=N/A" if best is None else f"best-PR={best['mean']:.4e} ({best['mode']})"
+                print(
+                    f"    Horizon {horizon}: "
+                    f"no-reencode={no_re['mean']:.4e}, "
+                    f"every-step={every['mean']:.4e}, "
+                    f"{best_str}"
+                )
+        
+        print(f"  Evaluation artifacts saved to {eval_dir}")
+        return eval_results
+    
+    # Evaluate both checkpoints
+    last_checkpoint = run_dir / 'last.pt'
+    best_checkpoint = run_dir / 'checkpoint.pt'
+    
+    eval_results_last = evaluate_checkpoint(last_checkpoint, "last")
+    eval_results_best = evaluate_checkpoint(best_checkpoint, "best")
+    
+    # Also save a combined summary
+    if eval_results_last is not None or eval_results_best is not None:
+        summary = {
+            "last_checkpoint": eval_results_last is not None,
+            "best_checkpoint": eval_results_best is not None,
+        }
+        summary_file = run_dir / "evaluation_summary.json"
+        with open(summary_file, "w") as f:
+            json.dump(summary, f, indent=2)
+    
     print("-" * 80)
     print(f"Training complete! Checkpoints saved to {run_dir}")
     
