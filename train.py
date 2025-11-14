@@ -181,7 +181,7 @@ def build_optimizer(model: nn.Module, cfg: Config) -> torch.optim.Optimizer:
         param_groups.append({
             'params': kmat_params,
             'lr': cfg.TRAIN.K_MATRIX_LR,
-            'weight_decay': cfg.TRAIN.WEIGHT_DECAY,
+            'weight_decay': 0.0,  # No weight decay on Koopman matrix
         })
 
     return torch.optim.AdamW(param_groups)
