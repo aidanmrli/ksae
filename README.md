@@ -50,7 +50,7 @@ python train.py --config generic_sparse --env pendulum --sparsity_coeff 0.1
 python train.py \
   --config generic_sparse \
   --env lyapunov \
-  --num_steps 5000 \
+  --num_steps 20000 \
   --batch_size 256 \
   --target_size 64 \
   --reconst_coeff 0.02 \
