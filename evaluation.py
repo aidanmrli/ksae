@@ -458,7 +458,7 @@ def _save_lyapunov_phase_portrait_comparison(
         HAS_SCIPY = False
 
     device = next(model.parameters()).device
-    dt = float(getattr(env.cfg.ENV.LYAPUNOV, 'DT', 0.05))
+    dt = float(env.dt)
 
     # Colors per-attractor (tab20 like in the notebook)
     import matplotlib.cm as cm
