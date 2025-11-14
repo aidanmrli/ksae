@@ -38,8 +38,8 @@ uv pip install -e .
 ### Train a Model
 
 ```bash
-# Train with defaults
-python train.py --config generic_sparse --env duffing --num_steps 4000
+# Train with defaults on the Duffing Oscillator
+uv run python train.py --config generic_sparse --env duffing --pairwise --num_steps 20000
 
 # Sweep over sparsity coefficient
 python train.py --config generic_sparse --env pendulum --sparsity_coeff 0.001
