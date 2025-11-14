@@ -381,6 +381,21 @@ def train(
     
     logger.close()
 
+    # Plot training metrics
+    print("-" * 80)
+    print("Plotting training metrics...")
+    from plot_training_metrics import plot_metrics
+    try:
+        plot_metrics(
+            log_dir=run_dir,
+            metrics_to_plot=None,  # Plot all metrics
+            save_path=run_dir / 'training_metrics.png'
+        )
+        print(f"Training metrics plot saved to {run_dir / 'training_metrics.png'}")
+    except Exception as e:
+        print(f"Warning: Failed to plot training metrics: {e}")
+        print("Continuing with evaluation...")
+
     print("-" * 80)
     print("Running standardized evaluation suite...")
     print("Loading evaluation module...")
