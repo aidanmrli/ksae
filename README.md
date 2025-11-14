@@ -42,12 +42,12 @@ uv pip install -e .
 uv run python train.py --config generic_sparse --env duffing --pairwise --num_steps 20000
 
 # Sweep over sparsity coefficient
-python train.py --config generic_sparse --env pendulum --sparsity_coeff 0.001
-python train.py --config generic_sparse --env pendulum --sparsity_coeff 0.01
-python train.py --config generic_sparse --env pendulum --sparsity_coeff 0.1
+uv run python train.py --config generic_sparse --env pendulum --sparsity_coeff 0.001
+uv run python train.py --config generic_sparse --env pendulum --sparsity_coeff 0.01
+uv run python train.py --config generic_sparse --env pendulum --sparsity_coeff 0.1
 
 # Custom learning rate and latent dimension
-python train.py \
+uv run python train.py \
   --config generic_sparse \
   --env lyapunov \
   --num_steps 20000 \
@@ -60,10 +60,10 @@ python train.py \
   --seed 0 \
   --device cuda
 
-python train.py \
+uv run python train.py \
   --config lista \
   --env lyapunov \
-  --num_steps 5000 \
+  --num_steps 20000 \
   --batch_size 256 \
   --target_size 64 \
   --reconst_coeff 0.02 \
@@ -71,6 +71,15 @@ python train.py \
   --pairwise \
   --seed 0 \
   --device cuda
+
+
+# Evaluation from checkpoints
+# Required: specify system
+python evaluate_checkpoints.py --run_dir runs/kae/<CHANGE_THIS> --system duffing
+
+# With other options
+python evaluate_checkpoints.py --run_dir runs/kae/<CHANGE_THIS> --system pendulum --device cpu
+python evaluate_checkpoints.py --run_dir runs/kae/<CHANGE_THIS> --system lorenz63 --checkpoints checkpoint.pt
 ```
 
 ## Repository Structure
@@ -82,7 +91,6 @@ skae/
 ├── model.py               # Koopman autoencoder models
 ├── train.py               # Training script (CLI + API)
 ├── evaluation.py          # Model evaluation
-├── example_train.py       # Usage examples
 ├── plot_metrics.py        # Visualization utilities
 ├── tests/                 # Unit tests
 ├── notebooks/             # Research notebooks
@@ -142,6 +150,7 @@ python train.py --config lista_nonlinear --env lorenz63
 | `lotka_volterra` | 2D | Predator-prey dynamics |
 | `lorenz63` | 3D | Chaotic Lorenz attractor |
 | `parabolic` | 2D | Parabolic attractor (analytical Koopman) |
+| `lyapunov` | 2D | Multi-attractor system with Lyapunov dynamics |
 
 ## Training Output
 
@@ -150,27 +159,11 @@ Each training run creates a timestamped directory:
 ```
 runs/kae/20251106-223912/
 ├── config.json              # Full configuration (reproducibility)
-├── checkpoint.pt            # Best model (lowest loss)
+├── checkpoint.pt            # Best model (lowest validation error)
 ├── last.pt                  # Latest checkpoint
 ├── metrics_history.jsonl    # Time series of all metrics
 ├── metrics_summary.json     # Summary statistics
 └── final_metrics.json       # Final step metrics
-```
-
-### Visualize Training
-
-```bash
-# Plot all metrics
-python plot_metrics.py runs/kae/20251106-223912
-
-# Plot specific metrics
-python plot_metrics.py runs/kae/20251106-223912 --metrics loss sparsity_ratio
-
-# Print summary
-python plot_metrics.py runs/kae/20251106-223912 --summary
-
-# Save plot
-python plot_metrics.py runs/kae/20251106-223912 --save training_curves.png
 ```
 
 ## Model Evaluation
@@ -179,62 +172,95 @@ The evaluation module (`evaluation.py`) provides comprehensive evaluation of tra
 
 ### Automatic Evaluation
 
-Evaluation runs automatically at the end of training and saves results to `runs/kae/<timestamp>/evaluation/`:
+Evaluation runs automatically at the end of training and saves results to `runs/kae/<timestamp>/evaluation/`. The evaluation protocol tests models on multiple dynamical systems, computes horizon-wise mean-squared error metrics, and generates qualitative plots.
 
-```
-runs/kae/20251106-223912/evaluation/
-├── metrics.json                    # Full evaluation metrics
-├── duffing/
-│   ├── phase_portrait_1000_no_reencode.png
-│   ├── phase_portrait_1000_every_step.png
-│   ├── phase_portrait_1000_periodic_*.png
-│   └── mse_vs_horizon.png
-└── lyapunov/
-    ├── phase_portrait_comparison.png  # True vs learned system
-    └── ...
+### Standalone Evaluation
+
+You can also evaluate trained checkpoints independently using `evaluate_checkpoints.py`:
+
+```bash
+# Evaluate a checkpoint on a specific system
+uv run python evaluate_checkpoints.py --run_dir runs/kae/<timestamp> --system duffing
+
+# Evaluate multiple checkpoints
+uv run python evaluate_checkpoints.py \
+  --run_dir runs/kae/<timestamp> \
+  --system pendulum \
+  --checkpoints checkpoint.pt last.pt \
+  --device cuda
+
+# Evaluate on CPU
+uv run python evaluate_checkpoints.py --run_dir runs/kae/<timestamp> --system lyapunov --device cpu
 ```
 
 ### Rollout Strategies
 
 The evaluation protocol tests three rollout modes:
 
-1. **No reencoding**: Evolves entirely in latent space
-2. **Every-step reencoding**: Reencodes at each step
-3. **Periodic reencoding**: Reencodes every k steps
+1. **No reencoding** (`no_reencode`): Evolves entirely in latent space using `step_latent()` without reencoding
+2. **Every-step reencoding** (`every_step`): Reencodes at each step using `step_env()` (state-space evolution)
+3. **Periodic reencoding** (`periodic_k`): Reencodes every k steps (default periods: 10, 25, 50, 100)
+
+For periodic reencoding, the evaluation automatically selects the best period per horizon based on MSE.
 
 ### Evaluation Metrics
 
 For each system and rollout mode, the evaluation computes:
 
-- **Horizon-wise MSE**: Mean squared error at specific horizons (100, 1000 steps)
-- **MSE curves**: Cumulative MSE vs prediction horizon
-- **Phase portraits**: Visual comparison of predicted vs ground truth trajectories
-- **Best periodic period**: Automatically selects optimal reencoding period per horizon
+- **Horizon-wise MSE**: Mean ± std MSE aggregated across initial conditions for horizons (default: 100, 1000 steps)
+- **Cumulative MSE curve**: Time-averaged MSE vs. prediction horizon
+- **Per-step L2 error**: Mean L2 error at each prediction step
+- **Best periodic reencoding**: Automatically identifies optimal reencoding period per horizon
+
+Metrics are computed over a batch of unseen initial conditions (default: 100 samples) and handle exploding rollouts gracefully by marking them as NaN.
 
 ### Evaluation Output
 
-The `metrics.json` file contains structured metrics:
+The evaluation generates the following outputs in `runs/kae/<timestamp>/evaluation/<system>/`:
 
+**Metrics:**
+- `metrics.json`: Structured JSON with all metrics organized by system, mode, and horizon
+
+**Plots:**
+- `phase_portrait_plot_eval.png`: Grid of phase portraits for different reencoding periods
+- `mse_vs_horizon.png`: Cumulative MSE curves for all rollout modes
+- `error_curve_<mode>.png`: Per-step error curves for each mode
+- `error_curve_combined.png`: Combined per-step error curves for all modes
+
+**Special plots for Lyapunov system:**
+- `phase_portrait_comparison.png`: Side-by-side comparison of true vs. learned system with Voronoi regions, vector fields, and trajectories
+- `phase_portrait_vector_hist_true.png`: Histogram of vector field magnitudes (true system)
+- `phase_portrait_vector_hist_learned.png`: Histogram of vector field magnitudes (learned system)
+
+The `metrics.json` structure:
 ```json
 {
-  "duffing": {
+  "<system>": {
     "modes": {
       "no_reencode": {
         "horizons": {
-          "100": {"mean": 0.0012, "std": 0.0003, "num_valid": 100},
-          "1000": {"mean": 0.0456, "std": 0.0123, "num_valid": 100}
+          "100": {"mean": <float>, "std": <float>, "num_valid": <int>, "values": [<float>]},
+          "1000": {...}
         },
-        "mse_curve": [0.001, 0.002, ...]
+        "mse_curve": [<float>]
       },
+      "every_step": {...},
+      "periodic_10": {...},
       ...
     },
     "best_periodic": {
-      "100": {"mode": "periodic_25", "mean": 0.0008},
-      "1000": {"mode": "periodic_50", "mean": 0.0234}
+      "100": {"mode": "periodic_25", "mean": <float>},
+      "1000": {...}
+    },
+    "files": {
+      "phase_portrait_plot_eval": "<path>",
+      "mse_curve": "<path>",
+      ...
     }
   }
 }
 ```
+
 
 ## Testing
 
