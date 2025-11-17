@@ -488,8 +488,14 @@ class KoopmanMachine(ABC, nn.Module):
         sparsity_loss *= 0.5
         
         # Koopman matrix eigenvalues
+        # MPS doesn't support eigvals, so move to CPU if needed
         with torch.no_grad():
-            eigvals = torch.linalg.eigvals(kmat)
+            kmat_device = kmat.device
+            if kmat_device.type == 'mps':
+                kmat_cpu = kmat.cpu()
+                eigvals = torch.linalg.eigvals(kmat_cpu)
+            else:
+                eigvals = torch.linalg.eigvals(kmat)
             max_eigenvalue = torch.max(eigvals.real)
         
         # Nonzero codes
@@ -598,7 +604,13 @@ class KoopmanMachine(ABC, nn.Module):
         # Metrics for monitoring
         with torch.no_grad():
             kmat = self.kmatrix()
-            eigvals = torch.linalg.eigvals(kmat)
+            # MPS doesn't support eigvals, so move to CPU if needed
+            kmat_device = kmat.device
+            if kmat_device.type == 'mps':
+                kmat_cpu = kmat.cpu()
+                eigvals = torch.linalg.eigvals(kmat_cpu)
+            else:
+                eigvals = torch.linalg.eigvals(kmat)
             max_eigenvalue = torch.max(eigvals.real)
             
             num_nonzero_codes = (z_seq != 0).float().sum(dim=-1).mean()

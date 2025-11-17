@@ -23,6 +23,56 @@ from model import make_model
 from evaluation import EvaluationSettings, evaluate_model
 
 
+def get_device(device_arg: str) -> str:
+    """Auto-detect the best available device.
+    
+    Priority order:
+    1. Use explicitly requested device if available
+    2. MPS (Metal Performance Shaders) on macOS
+    3. CUDA on Linux/Windows
+    4. CPU as fallback
+    
+    Args:
+        device_arg: Requested device ('cpu', 'cuda', 'mps', or 'auto')
+        
+    Returns:
+        Device string ('cpu', 'cuda', or 'mps')
+    """
+    # If explicitly CPU, use it
+    if device_arg == 'cpu':
+        return 'cpu'
+    
+    # If explicitly MPS, check availability
+    if device_arg == 'mps':
+        if torch.backends.mps.is_available():
+            return 'mps'
+        else:
+            print("MPS not available, falling back to CPU")
+            return 'cpu'
+    
+    # If explicitly CUDA, check availability
+    if device_arg == 'cuda':
+        if torch.cuda.is_available():
+            return 'cuda'
+        else:
+            print("CUDA not available, falling back to CPU")
+            return 'cpu'
+    
+    # Auto-detect: prefer MPS on macOS, then CUDA, then CPU
+    if device_arg == 'auto' or device_arg == 'cuda':
+        # Check MPS first (macOS)
+        if torch.backends.mps.is_available():
+            return 'mps'
+        # Then CUDA (Linux/Windows with GPU)
+        elif torch.cuda.is_available():
+            return 'cuda'
+        # Fallback to CPU
+        else:
+            return 'cpu'
+    
+    return device_arg
+
+
 def get_dt_from_config(cfg: Config) -> float:
     """Extract dt from environment config based on ENV_NAME."""
     env_name = cfg.ENV.ENV_NAME.lower()
@@ -191,9 +241,9 @@ def main():
     parser.add_argument(
         '--device',
         type=str,
-        default='cuda',
-        choices=['cpu', 'cuda', 'mps'],
-        help='Device to run evaluation on'
+        default='auto',
+        choices=['cpu', 'cuda', 'mps', 'auto'],
+        help='Device to run evaluation on (auto: auto-detect best available)'
     )
     
     parser.add_argument(
@@ -211,12 +261,14 @@ def main():
         raise ValueError(f"Run directory does not exist: {run_dir}")
     
     # Auto-detect device
-    if args.device == 'cuda' and not torch.cuda.is_available():
-        print("CUDA not available, falling back to CPU")
-        args.device = 'cpu'
-    elif args.device == 'mps' and not torch.backends.mps.is_available():
-        print("MPS not available, falling back to CPU")
-        args.device = 'cpu'
+    device = get_device(args.device)
+    print(f"Using device: {device}")
+    if device == 'cuda' and torch.cuda.is_available():
+        print(f"  GPU: {torch.cuda.get_device_name(0)}")
+    elif device == 'mps':
+        print("  Using Metal Performance Shaders (MPS)")
+    else:
+        print("  Using CPU")
     
     # Load config from checkpoint or config.json
     cfg = None
@@ -229,7 +281,7 @@ def main():
         first_checkpoint = run_dir / args.checkpoints[0]
         if first_checkpoint.exists():
             print(f"Loading config from checkpoint {first_checkpoint}")
-            checkpoint = torch.load(first_checkpoint, map_location=args.device)
+            checkpoint = torch.load(first_checkpoint, map_location=device)
             if 'config' in checkpoint:
                 cfg = Config.from_dict(checkpoint['config'])
             else:
@@ -260,7 +312,7 @@ def main():
             checkpoint_path=checkpoint_path,
             checkpoint_name=name_key,
             cfg=cfg,
-            device=args.device,
+            device=device,
             system=args.system,
             output_dir=output_dir,
         )

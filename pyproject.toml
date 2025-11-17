@@ -25,6 +25,12 @@ dependencies = [
 
 [project.optional-dependencies]
 develop = ["pytest"]
+# CUDA PyTorch for Linux users who want GPU support
+# Install with: uv pip install --extra-index-url https://download.pytorch.org/whl/cu128 torch
+cuda = [
+    # Note: CUDA PyTorch must be installed manually on Linux:
+    # uv pip install --extra-index-url https://download.pytorch.org/whl/cu128 "torch>=2.2"
+]
 
 [tool.setuptools]
 py-modules = [
@@ -40,10 +46,13 @@ py-modules = [
     "model",
 ]
 
+# CUDA PyTorch index - only used on Linux when explicitly requested
+# On macOS/Windows, PyTorch will install from PyPI (CPU version)
+# On Linux, users can install CUDA version manually if needed
 [[tool.uv.index]]
 name = "pytorch-cu128"
 url = "https://download.pytorch.org/whl/cu128"
 explicit = true
-
-[tool.uv.sources]
-torch = { index = "pytorch-cu128" }
+# Note: This index is not used by default to ensure macOS/Windows compatibility
+# To use CUDA PyTorch on Linux, install manually:
+# uv pip install --extra-index-url https://download.pytorch.org/whl/cu128 "torch>=2.2"
