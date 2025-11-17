@@ -16,11 +16,16 @@ This repository implements several variants of Koopman autoencoders:
 
 This project uses [`uv`](https://github.com/astral-sh/uv) for fast, reliable dependency management.
 
-**Prerequisites**:
+Installing uv on MacOS/Linux:
 ```bash
-# Install uv (if not already installed)
 curl -LsSf https://astral.sh/uv/install.sh | sh
 ```
+
+To install uv for Windows, open PowerShell and run:
+```bash
+powershell -ExecutionPolicy ByPass -c "irm https://astral.sh/uv/install.ps1 | iex
+```
+The -ExecutionPolicy ByPass flag allows running the installation script from the internet.
 
 **Install the project and dependencies**:
 ```bash
