@@ -21,6 +21,9 @@ dependencies = [
     "flax>=0.10.7",
     "optax>=0.2.6",
     "torchdiffeq>=0.2.3",
+    "yfinance>=0.2.66",
+    "pandas>=2.3.3",
+    "seaborn>=0.13.2",
 ]
 
 [project.optional-dependencies]
