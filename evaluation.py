@@ -754,7 +754,7 @@ def _make_km_env_n_step(
                 latents.append(latent)
 
             latents_stack = torch.stack(latents, dim=0)
-            return model.decode(latents_stack)
+            return model.decode(latents_stack).detach().cpu()
         else:
             assert length % reencode_at_every == 0, (
                 "length must be divisible by reencode_at_every when > 1"
